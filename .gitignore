@@ -12,3 +12,6 @@ dist/
 .env
 *.sqlite3
 .DS_Store
+
+# Local worktrees
+.worktrees/
