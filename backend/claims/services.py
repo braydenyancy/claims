@@ -82,6 +82,7 @@ def update_draft(*, claim: Claim, actor: User, **fields: Any) -> Claim:
             return claim
         for k, v in changed.items():
             setattr(claim, k, v)
+        claim.version += 1
         claim.save()
         ClaimEvent.objects.create(
             claim=claim, actor=actor, action="edit",
@@ -99,14 +100,15 @@ def transition(*, claim_id: int, action: str, actor: User, expected_version: int
 
     with transaction.atomic():
         claim = Claim.objects.select_for_update().get(pk=claim_id)
+        _check_owner(claim, actor)
         if claim.version != expected_version:
             raise ConflictError(claim)
-        _check_owner(claim, actor)
         if actor.role != t.role:
             raise NotAllowed(f"Only a {t.role} can {action}.", 403)
         if claim.state not in t.from_states:
             raise NotAllowed(f"Cannot {action} a claim in state {claim.state}.", 400)
 
+        data = {k: v for k, v in data.items() if k in {f.name for f in t.fields}}
         errors = t.validate(claim, data, timezone.localdate())
         if errors:
             raise RuleViolation(errors)

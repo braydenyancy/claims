@@ -100,6 +100,8 @@ def _approve_rules(claim: ClaimView, data: dict, today: date) -> Errors:
     amount = data.get("approved_amount")
     if amount is None:
         return {"approved_amount": "Approved amount is required."}
+    if not isinstance(amount, Decimal):
+        return {"approved_amount": "Approved amount must be a decimal number."}
     if amount <= 0:
         return {"approved_amount": "Approved amount must be greater than zero."}
     if claim.billed_amount is not None and amount > claim.billed_amount:

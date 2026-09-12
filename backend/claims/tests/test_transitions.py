@@ -9,10 +9,23 @@ from decimal import Decimal
 import pytest
 
 from claims import services, transitions
-from claims.models import Claim, ClaimEvent, Role, State, User
+from claims.models import Claim, ClaimEvent, DenialReason, Role, State, User
 
 ALL_STATES = [s.value for s in State]
 ALL_ACTIONS = list(transitions.TRANSITIONS)
+
+# The literal shape of the table, independent of transitions.TRANSITIONS itself,
+# so a change to the table's from-states, target, or role is caught even though
+# the matrix test above derives its own expectation from the same table.
+EXPECTED_TABLE = [
+    ("submit", frozenset({State.DRAFT}), State.SUBMITTED, Role.SUBMITTER),
+    ("start_review", frozenset({State.SUBMITTED}), State.UNDER_REVIEW, Role.REVIEWER),
+    ("request_info", frozenset({State.UNDER_REVIEW}), State.INFO_REQUESTED, Role.REVIEWER),
+    ("provide_info", frozenset({State.INFO_REQUESTED}), State.UNDER_REVIEW, Role.SUBMITTER),
+    ("approve", frozenset({State.UNDER_REVIEW}), State.APPROVED, Role.REVIEWER),
+    ("deny", frozenset({State.UNDER_REVIEW}), State.DENIED, Role.REVIEWER),
+    ("withdraw", frozenset({State.DRAFT, State.INFO_REQUESTED}), State.WITHDRAWN, Role.SUBMITTER),
+]
 
 # Input that satisfies each transition's rule when the claim itself is complete.
 VALID_DATA = {
@@ -34,6 +47,27 @@ def make_claim(submitter, state, **overrides):
     )
     fields.update(overrides)
     return Claim.objects.create(**fields)
+
+
+def test_closed_lists_match_models():
+    """transitions.py has no Django import, so its closed lists (denial
+    reasons, states, roles) are copies of the ones models.py defines. Pin
+    them together so the two cannot drift apart silently."""
+    assert set(transitions.DENIAL_REASONS) == {c for c, _ in DenialReason.choices}
+    assert {
+        transitions.DRAFT, transitions.SUBMITTED, transitions.UNDER_REVIEW,
+        transitions.INFO_REQUESTED, transitions.APPROVED, transitions.DENIED,
+        transitions.WITHDRAWN,
+    } == {c for c, _ in State.choices}
+    assert {transitions.SUBMITTER, transitions.REVIEWER} == {c for c, _ in Role.choices}
+
+
+def test_transition_table_matches_literal_spec():
+    """The matrix test below derives its expectation from TRANSITIONS itself,
+    so it cannot catch a wrong from_states/to_state/role written into the
+    table. Pin the table against a literal, independently-written spec."""
+    actual = [(t.action, t.from_states, t.to_state, t.role) for t in transitions.TRANSITIONS.values()]
+    assert actual == EXPECTED_TABLE
 
 
 @pytest.mark.django_db
@@ -121,7 +155,7 @@ def test_notes_are_required(submitter, reviewer, action, state, actor_role, note
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("amount", [None, Decimal("0.00"), Decimal("-1.00"), Decimal("100.01")])
+@pytest.mark.parametrize("amount", [None, Decimal("0.00"), Decimal("-1.00"), Decimal("100.01"), "80.00"])
 def test_approve_amount_rules(submitter, reviewer, amount):
     claim = make_claim(submitter, State.UNDER_REVIEW)
     data = {} if amount is None else {"approved_amount": amount}
@@ -139,6 +173,17 @@ def test_approve_stores_amount(submitter, reviewer):
     )
     assert result.approved_amount == Decimal("100.00")
     assert ClaimEvent.objects.get(claim=claim, action="approve").data == {"approved_amount": "100.00"}
+
+
+@pytest.mark.django_db
+def test_extra_data_keys_are_not_stored(submitter, reviewer):
+    claim = make_claim(submitter, State.UNDER_REVIEW)
+    services.transition(
+        claim_id=claim.pk, action="approve", actor=reviewer, expected_version=0,
+        data={"approved_amount": Decimal("50.00"), "extra": "not declared"},
+    )
+    event = ClaimEvent.objects.get(claim=claim, action="approve")
+    assert event.data == {"approved_amount": "50.00"}
 
 
 @pytest.mark.django_db
@@ -177,6 +222,10 @@ def test_submitter_cannot_act_on_another_submitters_claim(submitter, db):
     claim = make_claim(submitter, State.DRAFT, submission_id="")
     with pytest.raises(services.NotAllowed):
         services.transition(claim_id=claim.pk, action="submit", actor=other, expected_version=0)
+    # Ownership is checked before the version check: a stale version on a claim
+    # the actor doesn't own is still NotAllowed, not ConflictError.
+    with pytest.raises(services.NotAllowed):
+        services.transition(claim_id=claim.pk, action="submit", actor=other, expected_version=99)
 
 
 @pytest.mark.django_db
@@ -195,8 +244,12 @@ def test_update_draft_records_changed_fields(submitter):
     services.update_draft(claim=claim, actor=submitter, payer="Acme", billed_amount=Decimal("20.00"))
     claim.refresh_from_db()
     assert (claim.payer, claim.billed_amount) == ("Acme", Decimal("20.00"))
+    assert claim.version == 1
     event = ClaimEvent.objects.get(claim=claim, action="edit")
     assert event.data == {"payer": "Acme", "billed_amount": "20.00"}
+    # The edit bumped the version, so a transition still holding version 0 is stale.
+    with pytest.raises(services.ConflictError):
+        services.transition(claim_id=claim.pk, action="withdraw", actor=submitter, expected_version=0)
 
 
 @pytest.mark.django_db
