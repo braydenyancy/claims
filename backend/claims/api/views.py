@@ -1,7 +1,24 @@
+from django.contrib.auth import authenticate, login, logout
 from django.db import connection
+from django.middleware.csrf import get_token
+from rest_framework import mixins, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from claims import services
+from claims.models import Claim, Role
+
+from .serializers import (
+    ClaimDetailSerializer,
+    ClaimEventSerializer,
+    ClaimListSerializer,
+    ClaimWriteSerializer,
+    LoginSerializer,
+    UserSerializer,
+)
 
 
 class HealthView(APIView):
@@ -14,3 +31,90 @@ class HealthView(APIView):
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
         return Response({"status": "ok", "database": "ok"})
+
+
+class LoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = LoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = authenticate(request, **serializer.validated_data)
+        if user is None:
+            return Response({"detail": "Invalid username or password."}, status=status.HTTP_400_BAD_REQUEST)
+        login(request, user)
+        get_token(request)  # ensure the CSRF cookie is set for the SPA
+        return Response(UserSerializer(user).data)
+
+
+class LogoutView(APIView):
+    def post(self, request):
+        logout(request)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MeView(APIView):
+    def get(self, request):
+        get_token(request)
+        return Response(UserSerializer(request.user).data)
+
+
+class ClaimViewSet(
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Claims as the current user may see them. Submitters see their own
+    (D8); reviewers see all. Writes go through services; this layer only
+    maps outcomes to HTTP."""
+
+    http_method_names = ["get", "post", "patch", "head", "options"]
+
+    def get_queryset(self):
+        qs = Claim.objects.select_related("created_by")
+        if self.request.user.role == Role.SUBMITTER:
+            qs = qs.filter(created_by=self.request.user)
+        state = self.request.query_params.get("state")
+        if state:
+            qs = qs.filter(state=state)
+        return qs
+
+    def get_serializer_class(self):
+        if self.action == "list":
+            return ClaimListSerializer
+        if self.action in ("create", "partial_update"):
+            return ClaimWriteSerializer
+        return ClaimDetailSerializer
+
+    def _detail(self, claim, status_code=status.HTTP_200_OK):
+        return Response(ClaimDetailSerializer(claim, context=self.get_serializer_context()).data, status=status_code)
+
+    def create(self, request, *args, **kwargs):
+        serializer = ClaimWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            claim = services.create_draft(created_by=request.user, **serializer.validated_data)
+        except services.NotAllowed as exc:
+            raise PermissionDenied(str(exc))
+        return self._detail(claim, status.HTTP_201_CREATED)
+
+    def partial_update(self, request, *args, **kwargs):
+        claim = self.get_object()
+        serializer = ClaimWriteSerializer(claim, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            claim = services.update_draft(claim=claim, actor=request.user, **serializer.validated_data)
+        except services.NotAllowed as exc:
+            return Response({"detail": str(exc)}, status=exc.status_code)
+        return self._detail(claim)
+
+    def update(self, request, *args, **kwargs):
+        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    @action(detail=True, methods=["get"])
+    def history(self, request, pk=None):
+        claim = self.get_object()
+        events = claim.events.select_related("actor").all()
+        return Response(ClaimEventSerializer(events, many=True).data)
