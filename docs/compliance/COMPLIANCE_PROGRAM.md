@@ -13,9 +13,9 @@ effective compliance program (HHS OIG Compliance Program Guidance).
   (approved amount never exceeds billed, denial reasons from a fixed
   list, no duplicate registration, every decision attributed) exist to
   keep that representation accurate.
-- **Out of scope:** Anti-Kickback Statute and Stark Law. Both govern
-  referral and physician financial relationships, which a claim review
-  workflow does not touch.
+- **Out of scope for this demo:** Anti-Kickback Statute and Stark Law.
+  Both govern referral and physician financial relationships, which
+  are outside what this claim review workflow models.
 
 ## 1. Compliance officer and committee
 
