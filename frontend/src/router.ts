@@ -18,7 +18,14 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   const session = useSession();
-  const user = await session.load();
+  // load() rethrows on anything but a 403 (network down, 500); treat that as
+  // signed out too, so the guard still redirects instead of leaving a blank page.
+  let user;
+  try {
+    user = await session.load();
+  } catch {
+    user = null;
+  }
   if (to.name !== "login" && !user) return { name: "login", query: { next: to.fullPath } };
   if (to.name === "login" && user) return { name: "claims" };
 });

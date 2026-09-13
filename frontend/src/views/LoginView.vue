@@ -35,6 +35,6 @@ async function submit() {
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <button :disabled="busy">Sign in</button>
     </form>
-    <p class="hint">Seeded users: sam (submitter), rita and rob (reviewers). Password: password.</p>
+    <p class="hint">Seeded users: sam, rita, rob. Password: password.</p>
   </main>
 </template>
