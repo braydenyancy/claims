@@ -53,8 +53,11 @@ def _event(claim: Claim, action: str, severity: str, data: dict) -> str:
 def claim_next() -> Registration | None:
     now = timezone.now()
     with transaction.atomic():
+        # Lock order: Claim before Registration, everywhere. Claiming work
+        # takes no claim lock at all — of=("self",) keeps the select_related
+        # join from locking claim rows behind the registration one.
         reg = (
-            Registration.objects.select_for_update(skip_locked=True)
+            Registration.objects.select_for_update(skip_locked=True, of=("self",))
             .select_related("claim")
             .filter(status=RegistrationStatus.PENDING, next_attempt_at__lte=now)
             .order_by("next_attempt_at", "id")
