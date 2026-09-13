@@ -11,24 +11,29 @@ export function useAsync<T>() {
   const loading = ref(false);
   const router = useRouter();
   const session = useSession();
+  let seq = 0;
 
   async function run(fn: () => Promise<T>): Promise<T | null> {
+    const mine = ++seq;
     loading.value = true;
     error.value = "";
     try {
       const result = await fn();
-      data.value = result;
+      // Only the most recent call may write; a slower earlier response must not overwrite a newer one.
+      if (mine === seq) data.value = result;
       return result;
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) {
-        session.clear();
-        await router.push({ name: "login", query: { next: router.currentRoute.value.fullPath } });
+        if (mine === seq) {
+          session.clear();
+          await router.push({ name: "login", query: { next: router.currentRoute.value.fullPath } });
+        }
         return null;
       }
-      error.value = e instanceof Error ? e.message : "Something went wrong.";
+      if (mine === seq) error.value = e instanceof Error ? e.message : "Something went wrong.";
       return null;
     } finally {
-      loading.value = false;
+      if (mine === seq) loading.value = false;
     }
   }
 
