@@ -60,7 +60,22 @@ holds more than one submission for a reference; a human resolves which
 is real there, so the API refuses to retry it — only FAILED is
 retryable. `test_clearinghouse.py` proves all four outcomes against
 `FakeGateway`: rejected, unknown-and-recorded, unknown-and-lost, and
-duplicate.
+duplicate. Acknowledging an alert does not bump the claim's `version`: it
+is an event about the record, not a lifecycle transition, so it cannot
+make another reviewer's open form stale. A successful retry leaves the
+alert open on purpose — the registration succeeding is not an answer to
+"why did this fail five times", and only a reviewer's note closes it.
+
+**The window this design cannot close.** The lease token protects the
+write, not the call. If a vendor call outlives its lease, the reaper
+returns the row to PENDING while the first worker is still talking to the
+clearinghouse; a second worker then looks up before the first one's
+submission lands, sees nothing, and submits again — two billed
+submissions, caught afterwards as `duplicate_submission` but not
+prevented. `CALL_TIMEOUT_SECONDS` (20s) keeps every call far inside
+`LEASE_SECONDS` (60s), so opening the window needs a vendor outage longer
+than the lease. Closing it outright needs an idempotency key the vendor
+does not offer.
 
 **Deferred.** Celery replacing the poll loop in production; jittered
 backoff instead of `2 ** attempts`; a per-claim idempotency key at the

@@ -145,9 +145,17 @@ worker-1  | 2026-09-13 18:37:18,745 INFO claims.worker registration claim=CLM-24
 worker-1  | 2026-09-13 18:37:20,328 INFO claims.worker registration claim=CLM-65EF6E2C57FB0A08 status=DONE attempt=1
 ```
 
-All five landed `DONE` on the first attempt — no retry or reconcile this
-time, which the 25% failure rate on five independent rolls makes plausible
-(`0.75^5 ≈ 24%` chance of zero failures). Submitting five more:
+All five landed `DONE` on the first attempt, which is the likely outcome
+rather than a lucky one. Only a `ClearinghouseError` (10%) keeps an attempt
+from reaching `DONE` on the first pass: a `ClearinghouseTimeout` (a further
+15%) has already recorded, so the same attempt's second `lookup` finds the
+ID and reconciles it without a retry. Five first-try successes is therefore
+`0.9^5 ≈ 59%`, not `0.75^5 ≈ 24%`. Note also what this log format could not
+tell you: a reconciled timeout and a plain success both printed
+`status=DONE attempt=1`. The worker log now names the event
+(`event=registration_succeeded` against `event=registration_reconciled`),
+so the two are distinguishable in the lines below section 6. Submitting five
+more:
 
 ```
 $ for i in 6 7 8 9 10; do
@@ -302,6 +310,169 @@ $ docker compose -p stage-2-clearinghouse up -d postgres
  Container stage-2-clearinghouse-postgres-1 Started
 ```
 
+## 7. Crashed worker: a lost call adopted, not re-billed
+
+Recorded after the final-review fixes, on the same compose project and the same
+`pgdata` volume as sections 1-6 (so claim ids continue from there). Section 6's
+run never produced a `reaped` line because no lease ever expired; this section
+makes one expire on purpose rather than waiting for a real crash to land in the
+right microsecond. The worker is stopped *before* the claim is submitted, so
+nothing here depends on winning a race with the poll loop.
+
+```
+$ docker compose -p stage-2-clearinghouse up -d
+ Container stage-2-clearinghouse-postgres-1 Running
+ Container stage-2-clearinghouse-api-1 Creating
+ Container stage-2-clearinghouse-api-1 Created
+ Container stage-2-clearinghouse-worker-1 Creating
+ Container stage-2-clearinghouse-worker-1 Created
+ Container stage-2-clearinghouse-postgres-1 Waiting
+ Container stage-2-clearinghouse-postgres-1 Healthy
+ Container stage-2-clearinghouse-api-1 Starting
+ Container stage-2-clearinghouse-api-1 Started
+ Container stage-2-clearinghouse-api-1 Waiting
+ Container stage-2-clearinghouse-api-1 Healthy
+ Container stage-2-clearinghouse-worker-1 Starting
+ Container stage-2-clearinghouse-worker-1 Started
+
+$ docker compose -p stage-2-clearinghouse stop worker
+ Container stage-2-clearinghouse-worker-1 Stopping
+ Container stage-2-clearinghouse-worker-1 Stopped
+```
+
+One claim, created and submitted as `sam` with the worker down:
+
+```
+$ curl -s -c ./jar -b ./jar -H 'Content-Type: application/json' \
+    -d '{"username": "sam", "password": "password"}' localhost:8000/api/auth/login/
+{"id":1,"username":"sam","role":"submitter"}
+
+$ CSRF=$(awk '$6=="csrftoken"{v=$7} END{print v}' ./jar)
+$ curl -s -c ./jar -b ./jar -H 'Content-Type: application/json' -H "X-CSRFToken: $CSRF" \
+    -d '{"payer": "Harbor Health", "service_date": "2026-09-05", "billed_amount": "137.00"}' \
+    localhost:8000/api/claims/
+{"id":21,"reference":"CLM-24E91C68B674C4E4","payer":"Harbor Health","service_date":"2026-09-05","billed_amount":"137.00","state":"DRAFT","version":0,"has_open_alert":false,"created_by":"sam","created_at":"2026-09-13T18:59:17.149590Z","updated_at":"2026-09-13T18:59:17.149595Z","approved_amount":null,"denial_reason":"","submission_id":"","available_actions":[{"action":"submit","label":"Submit","fields":[],"blocked_reason":null},{"action":"withdraw","label":"Withdraw","fields":[],"blocked_reason":null}],"registration":{"status":"not_submitted"}}
+
+$ curl -s -c ./jar -b ./jar -H 'Content-Type: application/json' -H "X-CSRFToken: $CSRF" \
+    -d '{"action": "submit", "version": 0}' localhost:8000/api/claims/21/transition/
+{"id":21,"reference":"CLM-24E91C68B674C4E4","payer":"Harbor Health","service_date":"2026-09-05","billed_amount":"137.00","state":"SUBMITTED","version":1,"has_open_alert":false,"created_by":"sam","created_at":"2026-09-13T18:59:17.149590Z","updated_at":"2026-09-13T18:59:20.577837Z","approved_amount":null,"denial_reason":"","submission_id":"","available_actions":[],"registration":{"status":"pending","attempts":0,"last_error":"","submission_id":"","next_attempt_at":"2026-09-13T18:59:20.579688+00:00"}}
+```
+
+Now stand in for the dead worker. It got as far as a successful `submit` and
+died before `record` could run, so the clearinghouse holds an ID nothing in the
+database knows about, and the registration is left `IN_FLIGHT` under a lease
+token that will never come back — dated two minutes ago, past the 60 second
+`LEASE_SECONDS`. The `submit` loop retries only on `ClearinghouseError`, which
+records nothing; a `ClearinghouseTimeout` has already recorded, so it counts as
+the dead worker's call and stops the loop too:
+
+```
+$ docker compose -p stage-2-clearinghouse exec -T api python manage.py shell -c "
+import clearinghouse
+from datetime import timedelta
+from django.utils import timezone
+from claims.models import Claim, Registration, RegistrationStatus
+
+R = 'CLM-24E91C68B674C4E4'
+while True:
+    try:
+        print('submit ->', clearinghouse.submit(R, '137.00'))
+        break
+    except clearinghouse.ClearinghouseTimeout as exc:
+        print('submit -> timed out, but recorded:', exc)
+        break
+    except clearinghouse.ClearinghouseError as exc:
+        print('submit -> rejected, nothing recorded:', exc)
+
+claim = Claim.objects.get(reference=R)
+Registration.objects.filter(claim=claim).update(
+    status=RegistrationStatus.IN_FLIGHT,
+    lease_token='dead-worker',
+    in_flight_since=timezone.now() - timedelta(seconds=120),
+    attempts=1,
+)
+reg = Registration.objects.get(claim=claim)
+print('registration ->', reg.status, reg.lease_token, reg.attempts, reg.in_flight_since)
+print('lookup ->', clearinghouse.lookup(R))
+"
+8 objects imported automatically (use -v 2 for details).
+
+submit -> CH-7431D543FA
+registration -> IN_FLIGHT dead-worker 1 2026-09-13 18:57:39.323784+00:00
+lookup -> ['CH-7431D543FA']
+```
+
+One submission at the clearinghouse, and a database that has no idea. Start the
+worker:
+
+```
+$ docker compose -p stage-2-clearinghouse start worker
+ Container stage-2-clearinghouse-postgres-1 Waiting
+ Container stage-2-clearinghouse-postgres-1 Healthy
+ Container stage-2-clearinghouse-api-1 Waiting
+ Container stage-2-clearinghouse-api-1 Healthy
+ Container stage-2-clearinghouse-worker-1 Starting
+ Container stage-2-clearinghouse-worker-1 Started
+
+$ sleep 5 && docker compose -p stage-2-clearinghouse logs worker | grep -E "reaped|CLM-24E91C68B674C4E4"
+worker-1  | 2026-09-13 18:59:44,488 WARNING claims.worker reaped 1 expired leases
+worker-1  | 2026-09-13 18:59:44,494 INFO claims.worker registration claim=CLM-24E91C68B674C4E4 status=DONE attempt=2 event=registration_reconciled
+```
+
+Six milliseconds between the two lines: the reaper returned the row to PENDING,
+the next attempt ran its `lookup` first, found the dead worker's ID, and adopted
+it. `event=registration_reconciled` is the fix from this review earning its
+keep — `status=DONE attempt=2` alone would not have said whether the ID came
+from a fresh submission or from the one already at the clearinghouse.
+
+```
+$ curl -s -b ./jar localhost:8000/api/claims/21/history/
+[{"id":68,"action":"create","from_state":"DRAFT","to_state":"DRAFT","actor":"sam","data":{},"severity":"info","created_at":"2026-09-13T18:59:17.150545Z"},
+ {"id":69,"action":"submit","from_state":"DRAFT","to_state":"SUBMITTED","actor":"sam","data":{},"severity":"info","created_at":"2026-09-13T18:59:20.578874Z"},
+ {"id":70,"action":"registration_recovered","from_state":"SUBMITTED","to_state":"SUBMITTED","actor":null,"data":{"attempt":1},"severity":"warning","created_at":"2026-09-13T18:59:44.487735Z"},
+ {"id":71,"action":"registration_reconciled","from_state":"SUBMITTED","to_state":"SUBMITTED","actor":null,"data":{"attempt":2,"submission_id":"CH-7431D543FA"},"severity":"info","created_at":"2026-09-13T18:59:44.493548Z"}]
+```
+
+`registration_recovered` then `registration_reconciled`, both on the record.
+And the count that matters — still exactly one submission, so the crash cost
+nothing and billed nothing twice:
+
+```
+$ docker compose -p stage-2-clearinghouse exec -T api python manage.py shell -c "
+import clearinghouse
+print('lookup ->', clearinghouse.lookup('CLM-24E91C68B674C4E4'))
+"
+8 objects imported automatically (use -v 2 for details).
+
+lookup -> ['CH-7431D543FA']
+```
+
+```
+$ docker compose -p stage-2-clearinghouse down
+ Container stage-2-clearinghouse-worker-1 Stopping
+ Container stage-2-clearinghouse-worker-1 Stopped
+ Container stage-2-clearinghouse-worker-1 Removing
+ Container stage-2-clearinghouse-worker-1 Removed
+ Container stage-2-clearinghouse-api-1 Stopping
+ Container stage-2-clearinghouse-api-1 Stopped
+ Container stage-2-clearinghouse-api-1 Removing
+ Container stage-2-clearinghouse-api-1 Removed
+ Container stage-2-clearinghouse-postgres-1 Stopping
+ Container stage-2-clearinghouse-postgres-1 Stopped
+ Container stage-2-clearinghouse-postgres-1 Removing
+ Container stage-2-clearinghouse-postgres-1 Removed
+ Network stage-2-clearinghouse_default Removing
+ Network stage-2-clearinghouse_default Removed
+
+$ docker compose -p stage-2-clearinghouse up -d postgres
+ Network stage-2-clearinghouse_default Creating
+ Network stage-2-clearinghouse_default Created
+ Container stage-2-clearinghouse-postgres-1 Creating
+ Container stage-2-clearinghouse-postgres-1 Created
+ Container stage-2-clearinghouse-postgres-1 Starting
+ Container stage-2-clearinghouse-postgres-1 Started
+```
+
 ## Tests
 
 ```
@@ -315,3 +486,15 @@ $ cd backend && uv run pytest -q
 (187 at the tip of task 5's work, `e2b4f51`; 190 here because a fix commit,
 `b242b92`, landed on the branch mid-session and added tests of its own —
 unrelated to this task's four files.)
+
+And again after the final-review fixes, which added two tests — the vendor call
+that outruns its client-side timeout, and a reviewer's retry adopting a record
+that landed late:
+
+```
+$ cd backend && uv run pytest -q
+........................................................................ [ 37%]
+........................................................................ [ 75%]
+................................................                         [100%]
+192 passed in 37.67s
+```

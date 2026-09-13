@@ -3,11 +3,24 @@ clearinghouse. The gateway tests prove the vendor's two failure modes are
 mapped to distinct outcomes and that a timeout really does leave a record
 behind, which is the fact the whole worker design rests on."""
 
+import threading
+import time
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.core.management import call_command
+from django.db import connection
+from django.utils import timezone
 
+from claims import services
 from claims.clearinghouse import gateway as gw
+from claims.clearinghouse import worker
+from claims.models import Claim, Registration, RegistrationStatus, State
+
+# Captured before any fixture runs: the vendor fixture's no-op sleep replaces
+# time.sleep process-wide, so a test that wants a real one must keep a handle.
+_REAL_SLEEP = time.sleep
 
 
 @pytest.fixture
@@ -47,6 +60,25 @@ def test_vendor_timeout_is_unknown_but_recorded(monkeypatch, vendor):
     assert len(gw.VendorGateway().lookup("CLM-C")) == 1
 
 
+def test_vendor_call_slower_than_the_timeout_is_unknown(monkeypatch, vendor, settings):
+    """The vendor call carries no timeout of its own. A call that outruns
+    CALL_TIMEOUT_SECONDS comes back Unknown and is abandoned, not waited on —
+    and it still records, which is exactly what Unknown warns about."""
+    settings.CLEARINGHOUSE = {**settings.CLEARINGHOUSE, "CALL_TIMEOUT_SECONDS": 0.05}
+    # Override the fixture's no-op with a real half second, for this test only.
+    monkeypatch.setattr(vendor.time, "sleep", lambda seconds: _REAL_SLEEP(0.5))
+    _roll(monkeypatch, vendor, 0.9)
+
+    outcome = gw.VendorGateway().register("CLM-SLOW", "10.00")
+
+    assert isinstance(outcome, gw.Unknown)
+    assert outcome.reason == "No response within 0.05 seconds"
+    deadline = time.monotonic() + 5
+    while not gw.VendorGateway().lookup("CLM-SLOW") and time.monotonic() < deadline:
+        _REAL_SLEEP(0.01)
+    assert len(gw.VendorGateway().lookup("CLM-SLOW")) == 1
+
+
 def test_fake_mirrors_vendor_recording_rules():
     fake = gw.FakeGateway(outcomes=[gw.Rejected("down"), gw.Unknown("slow"), gw.Registered("CH-1")])
     assert isinstance(fake.register("R", "1.00"), gw.Rejected)
@@ -63,15 +95,6 @@ def test_fake_can_lose_a_timeout():
     fake = gw.FakeGateway(outcomes=[gw.Unknown("slow")], record_on_unknown=False)
     fake.register("R", "1.00")
     assert fake.lookup("R") == []
-
-
-from datetime import timedelta
-
-from django.utils import timezone
-
-from claims import services
-from claims.clearinghouse import worker
-from claims.models import Claim, ClaimEvent, Registration, RegistrationStatus, State
 
 
 def submitted(submitter, reference="CLM-TEST0001"):
@@ -234,9 +257,6 @@ def test_stale_lease_result_is_discarded(submitter):
 
 @pytest.mark.django_db(transaction=True)
 def test_two_workers_claim_different_rows(submitter):
-    import threading
-    from django.db import connection
-
     a = submitted(submitter, "CLM-A")
     b = submitted(submitter, "CLM-B")
     taken = []
@@ -282,8 +302,6 @@ def test_reap_leaves_live_leases_alone(submitter):
 @pytest.mark.django_db(transaction=True)
 def test_run_worker_once_processes_one_row(submitter, settings):
     settings.CLEARINGHOUSE = {**settings.CLEARINGHOUSE, "GATEWAY": "claims.clearinghouse.gateway.FakeGateway"}
-    from django.core.management import call_command
-
     claim = submitted(submitter)
     call_command("run_worker", "--once")
     claim.refresh_from_db()
@@ -293,8 +311,6 @@ def test_run_worker_once_processes_one_row(submitter, settings):
 
 @pytest.mark.django_db(transaction=True)
 def test_gateway_is_never_called_inside_a_transaction(submitter, settings):
-    from django.db import connection
-
     class Strict(gw.FakeGateway):
         def register(self, reference, amount):
             assert not connection.in_atomic_block, "register called inside a transaction"
@@ -308,3 +324,27 @@ def test_gateway_is_never_called_inside_a_transaction(submitter, settings):
     worker.run_once(Strict(outcomes=[gw.Unknown("slow")]))
     claim.refresh_from_db()
     assert claim.registration.status == RegistrationStatus.DONE
+
+
+@pytest.mark.django_db
+def test_reviewer_retry_adopts_a_record_that_landed_late(submitter, reviewer):
+    """The budget ran out, but the clearinghouse did record one of those
+    attempts after all. The reviewer's retry must adopt it rather than bill a
+    second submission."""
+    claim = Claim.objects.create(
+        reference="CLM-LATE0001", payer="Acme", service_date=timezone.localdate(),
+        billed_amount=Decimal("100.00"), state=State.SUBMITTED, created_by=submitter,
+        has_open_alert=True,
+    )
+    Registration.objects.create(claim=claim, status=RegistrationStatus.FAILED, attempts=5)
+    fake = gw.FakeGateway()
+    fake.records["CLM-LATE0001"] = ["CH-LATE"]
+
+    services.retry_registration(claim=claim, actor=reviewer)
+    assert worker.run_once(fake) is True
+
+    claim.refresh_from_db()
+    assert claim.submission_id == "CH-LATE"
+    assert claim.registration.status == RegistrationStatus.DONE
+    assert fake.register_calls == []
+    assert events(claim)[-1] == ("registration_reconciled", "info")

@@ -20,6 +20,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     command: python manage.py runserver 0.0.0.0:8000
+    restart: unless-stopped
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
@@ -45,6 +46,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     entrypoint: ["python", "manage.py", "run_worker"]
+    restart: unless-stopped
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"

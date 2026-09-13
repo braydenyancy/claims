@@ -43,7 +43,7 @@ B's UI shows "A approved this at 10:42. Reload to see the current state."
 submit commits [state=SUBMITTED, event, registration=PENDING]
   → worker claims row (SKIP LOCKED, IN_FLIGHT, attempt+1)
   → lookup(reference) (none found)
-  → gateway.submit(reference, amount) → REGISTERED(id)
+  → gateway.register(reference, amount) → REGISTERED(id)
   → store id on claim → registration=DONE → event(info, registration_succeeded)
   → start_review now allowed
 ```
