@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api, ConflictError, ValidationError } from "../api/client";
 import type { ClaimDetail, ClaimEvent, ConflictBody, Meta } from "../api/types";
 import ActionPanel from "../components/ActionPanel.vue";
+import AlertPanel from "../components/AlertPanel.vue";
 import ConflictBanner from "../components/ConflictBanner.vue";
 import DraftForm from "../components/DraftForm.vue";
 import HistoryTable from "../components/HistoryTable.vue";
@@ -64,6 +65,37 @@ async function saved(updated: ClaimDetail) {
   history.value = await api.claims.history(updated.id).catch(() => history.value);
 }
 
+const retryBusy = ref(false);
+const retryError = ref("");
+let timer: ReturnType<typeof setInterval> | null = null;
+
+async function retry() {
+  const current = claim.data.value;
+  if (!current) return;
+  retryBusy.value = true;
+  retryError.value = "";
+  try {
+    claim.data.value = await api.claims.retry(current.id);
+    history.value = await api.claims.history(current.id).catch(() => history.value);
+  } catch (e) {
+    retryError.value = e instanceof Error ? e.message : "Could not retry.";
+  } finally {
+    retryBusy.value = false;
+  }
+}
+
+function polling(status: string | undefined) {
+  const wants = status === "pending" || status === "in_flight";
+  if (wants && timer === null) timer = setInterval(reload, 3000);
+  if (!wants && timer !== null) {
+    clearInterval(timer);
+    timer = null;
+  }
+}
+
+watch(() => claim.data.value?.registration.status, polling, { immediate: true });
+onBeforeUnmount(() => polling(undefined));
+
 onMounted(async () => {
   meta.value = await api.meta().catch(() => null);
   await reload();
@@ -83,6 +115,13 @@ onMounted(async () => {
         <StateBadge :state="claim.data.value.state" :label="stateLabel(claim.data.value.state)" />
       </h1>
       <p><RegistrationBadge :registration="claim.data.value.registration" :labels="meta?.registration_statuses" /></p>
+
+      <p v-if="claim.data.value.registration.status === 'failed'">
+        <button :disabled="retryBusy" @click="retry">Retry registration</button>
+        <span v-if="retryError" class="error"> {{ retryError }}</span>
+      </p>
+
+      <AlertPanel :events="history" :claim-id="claim.data.value.id" :can-act="true" @updated="saved" />
 
       <ConflictBanner v-if="conflict" :conflict="conflict" @reload="afterConflict" />
 
