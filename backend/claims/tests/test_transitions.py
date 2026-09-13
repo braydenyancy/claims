@@ -5,11 +5,13 @@ the table is proved rather than sampled."""
 
 from datetime import date, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
+from django.utils import timezone
 import pytest
 
 from claims import services, transitions
-from claims.models import Claim, ClaimEvent, DenialReason, Role, State, User
+from claims.models import Claim, ClaimEvent, DenialReason, Registration, RegistrationStatus, Role, State, User
 
 ALL_STATES = [s.value for s in State]
 ALL_ACTIONS = list(transitions.TRANSITIONS)
@@ -267,3 +269,33 @@ def test_update_draft_refused_for_non_owner(submitter, reviewer):
     claim = services.create_draft(created_by=submitter, billed_amount=Decimal("10.00"))
     with pytest.raises(services.NotAllowed):
         services.update_draft(claim=claim, actor=reviewer, payer="X")
+
+
+@pytest.mark.django_db
+def test_submit_enqueues_registration_in_the_same_transaction(submitter):
+    claim = make_claim(submitter, State.DRAFT, submission_id="")
+    services.transition(claim_id=claim.pk, action="submit", actor=submitter, expected_version=0)
+    reg = Registration.objects.get(claim=claim)
+    assert reg.status == RegistrationStatus.PENDING
+    assert reg.attempts == 0
+    assert reg.next_attempt_at <= timezone.now()
+
+
+@pytest.mark.django_db
+def test_submit_rolls_back_when_enqueue_fails(submitter):
+    claim = make_claim(submitter, State.DRAFT, submission_id="")
+    with patch("claims.services.Registration.objects.create", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError):
+            services.transition(claim_id=claim.pk, action="submit", actor=submitter, expected_version=0)
+    claim.refresh_from_db()
+    assert claim.state == State.DRAFT
+    assert claim.version == 0
+    assert not ClaimEvent.objects.filter(claim=claim).exists()
+    assert not Registration.objects.filter(claim=claim).exists()
+
+
+@pytest.mark.django_db
+def test_only_submit_enqueues(submitter, reviewer):
+    claim = make_claim(submitter, State.SUBMITTED)
+    services.transition(claim_id=claim.pk, action="start_review", actor=reviewer, expected_version=0)
+    assert not Registration.objects.filter(claim=claim).exists()

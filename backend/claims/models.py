@@ -4,6 +4,7 @@ from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.db.models import F, Q
+from django.utils import timezone
 
 
 class Role(models.TextChoices):
@@ -62,6 +63,7 @@ class Claim(models.Model):
     state = models.CharField(max_length=20, choices=State.choices, default=State.DRAFT)
     version = models.PositiveIntegerField(default=0)
     submission_id = models.CharField(max_length=40, blank=True)
+    has_open_alert = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="claims"
     )
@@ -120,3 +122,33 @@ class ClaimEvent(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ImmutableEventError("ClaimEvent rows cannot be deleted")
+
+
+class RegistrationStatus(models.TextChoices):
+    PENDING = "PENDING", "Pending"
+    IN_FLIGHT = "IN_FLIGHT", "In flight"
+    DONE = "DONE", "Done"
+    FAILED = "FAILED", "Failed"
+    HALTED = "HALTED", "Halted"
+
+
+class Registration(models.Model):
+    """The outbox row for one claim's clearinghouse registration (D2).
+    Created with the submit transition, in the same transaction. The
+    worker owns every later change. One per claim, ever."""
+
+    claim = models.OneToOneField(Claim, on_delete=models.PROTECT, related_name="registration")
+    status = models.CharField(max_length=12, choices=RegistrationStatus.choices, default=RegistrationStatus.PENDING)
+    attempts = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    in_flight_since = models.DateTimeField(null=True, blank=True)
+    lease_token = models.CharField(max_length=32, blank=True)
+    last_error = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["status", "next_attempt_at"], name="registration_due_idx")]
+
+    def __str__(self):
+        return f"{self.claim_id}:{self.status}"

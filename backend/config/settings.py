@@ -79,3 +79,18 @@ USE_I18N = True
 USE_TZ = True
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+CLEARINGHOUSE = {
+    "GATEWAY": os.environ.get("CLEARINGHOUSE_GATEWAY", "claims.clearinghouse.gateway.VendorGateway"),
+    "MAX_ATTEMPTS": int(os.environ.get("CLEARINGHOUSE_MAX_ATTEMPTS", "5")),
+    "LEASE_SECONDS": int(os.environ.get("CLEARINGHOUSE_LEASE_SECONDS", "60")),
+    "POLL_SECONDS": float(os.environ.get("CLEARINGHOUSE_POLL_SECONDS", "1.0")),
+}
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"plain": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
+    "loggers": {"claims": {"handlers": ["console"], "level": "INFO", "propagate": False}},
+}

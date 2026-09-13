@@ -11,7 +11,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import transitions
-from .models import Claim, ClaimEvent, Role, State, User
+from .models import Claim, ClaimEvent, Registration, Role, State, User
 
 
 class TransitionError(Exception):
@@ -49,6 +49,15 @@ def _jsonable(data: dict[str, Any]) -> dict[str, Any]:
 def _check_owner(claim: Claim, actor: User) -> None:
     if actor.role == Role.SUBMITTER and claim.created_by_id != actor.id:
         raise NotAllowed("You can only act on your own claims.", 403)
+
+
+def _enqueue_registration(claim: Claim) -> None:
+    """Outbox row for the worker (D2). Same transaction as the state change:
+    if either write fails, neither happened."""
+    Registration.objects.create(claim=claim)
+
+
+SIDE_EFFECTS = {"submit": _enqueue_registration}
 
 
 def create_draft(*, created_by: User, payer: str = "", service_date=None, billed_amount: Decimal) -> Claim:
@@ -127,4 +136,7 @@ def transition(*, claim_id: int, action: str, actor: User, expected_version: int
             claim=claim, actor=actor, action=action,
             from_state=from_state, to_state=t.to_state, data=_jsonable(data),
         )
+        side_effect = SIDE_EFFECTS.get(action)
+        if side_effect is not None:
+            side_effect(claim)
     return claim
