@@ -12,6 +12,7 @@ from claims import services
 from claims.models import Claim, Role, State
 
 from .serializers import (
+    AcknowledgeSerializer,
     ClaimDetailSerializer,
     ClaimEventSerializer,
     ClaimListSerializer,
@@ -74,7 +75,7 @@ class ClaimViewSet(
     http_method_names = ["get", "post", "patch", "head", "options"]
 
     def get_queryset(self):
-        qs = Claim.objects.select_related("created_by")
+        qs = Claim.objects.select_related("created_by", "registration")
         if self.request.user.role == Role.SUBMITTER:
             qs = qs.filter(created_by=self.request.user)
         if self.action == "list":
@@ -83,6 +84,11 @@ class ClaimViewSet(
                 if state not in State.values:
                     raise ValidationError({"state": "Unknown state."})
                 qs = qs.filter(state=state)
+            alert = self.request.query_params.get("alert")
+            if alert:
+                if alert != "open":
+                    raise ValidationError({"alert": "Only 'open' is supported."})
+                qs = qs.filter(has_open_alert=True)
         return qs
 
     def get_serializer_class(self):
@@ -143,6 +149,32 @@ class ClaimViewSet(
             )
         except services.ConflictError as exc:
             return Response(self._conflict(exc.claim), status=status.HTTP_409_CONFLICT)
+        except services.RuleViolation as exc:
+            return Response({"detail": str(exc), "errors": exc.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except services.NotAllowed as exc:
+            return Response({"detail": str(exc), "errors": {}}, status=exc.status_code)
+        return self._detail(claim)
+
+    @action(detail=True, methods=["post"], url_path="registration/retry")
+    def retry_registration(self, request, pk=None):
+        claim = self.get_object()
+        try:
+            claim = services.retry_registration(claim=claim, actor=request.user)
+        except services.NotAllowed as exc:
+            return Response({"detail": str(exc), "errors": {}}, status=exc.status_code)
+        return self._detail(claim)
+
+    @action(detail=True, methods=["post"])
+    def acknowledge(self, request, pk=None):
+        claim = self.get_object()
+        serializer = AcknowledgeSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "Invalid request.", "errors": {k: " ".join(str(m) for m in v) for k, v in serializer.errors.items()}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            claim = services.acknowledge_alert(claim=claim, actor=request.user, **serializer.validated_data)
         except services.RuleViolation as exc:
             return Response({"detail": str(exc), "errors": exc.errors}, status=status.HTTP_400_BAD_REQUEST)
         except services.NotAllowed as exc:

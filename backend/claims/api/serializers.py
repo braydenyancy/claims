@@ -5,7 +5,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from claims import transitions
-from claims.models import Claim, ClaimEvent, State, User
+from claims.models import Claim, ClaimEvent, Registration, State, User
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -26,7 +26,7 @@ class ClaimListSerializer(serializers.ModelSerializer):
         model = Claim
         fields = [
             "id", "reference", "payer", "service_date", "billed_amount",
-            "state", "version", "created_by", "created_at", "updated_at",
+            "state", "version", "has_open_alert", "created_by", "created_at", "updated_at",
         ]
         read_only_fields = fields
 
@@ -59,12 +59,17 @@ class ClaimDetailSerializer(ClaimListSerializer):
         ]
 
     def get_registration(self, claim):
-        # Stage 1 shape. Stage 2 backs this with the registration outbox row.
-        if claim.state == State.DRAFT:
+        try:
+            reg = claim.registration
+        except Registration.DoesNotExist:
             return {"status": "not_submitted"}
-        if claim.submission_id:
-            return {"status": "registered", "submission_id": claim.submission_id}
-        return {"status": "pending"}
+        return {
+            "status": reg.status.lower(),
+            "attempts": reg.attempts,
+            "last_error": reg.last_error,
+            "submission_id": claim.submission_id,
+            "next_attempt_at": reg.next_attempt_at.isoformat() if reg.status == "PENDING" else None,
+        }
 
 
 class ClaimWriteSerializer(serializers.ModelSerializer):
@@ -120,3 +125,8 @@ class TransitionSerializer(serializers.Serializer):
                     raise serializers.ValidationError({f.name: "Must have at most two decimal places."})
         attrs["data"] = data
         return attrs
+
+
+class AcknowledgeSerializer(serializers.Serializer):
+    event_id = serializers.IntegerField(min_value=1)
+    note = serializers.CharField(allow_blank=True, trim_whitespace=False)

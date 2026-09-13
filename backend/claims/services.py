@@ -11,7 +11,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import transitions
-from .models import Claim, ClaimEvent, Registration, Role, State, User
+from .models import Claim, ClaimEvent, Registration, RegistrationStatus, Role, Severity, State, User
 
 
 class TransitionError(Exception):
@@ -139,4 +139,54 @@ def transition(*, claim_id: int, action: str, actor: User, expected_version: int
         side_effect = SIDE_EFFECTS.get(action)
         if side_effect is not None:
             side_effect(claim)
+    return claim
+
+
+def retry_registration(*, claim: Claim, actor: User) -> Claim:
+    """A reviewer asks the worker to try a FAILED registration again.
+    HALTED is not retryable here: a human resolves it at the clearinghouse."""
+    if actor.role != Role.REVIEWER:
+        raise NotAllowed("Only a reviewer can retry a registration.", 403)
+    with transaction.atomic():
+        claim = Claim.objects.select_for_update().get(pk=claim.pk)
+        reg = Registration.objects.select_for_update().get(claim=claim)
+        if reg.status != RegistrationStatus.FAILED:
+            raise NotAllowed(f"Registration is {reg.status}, not FAILED.", 400)
+        reg.status = RegistrationStatus.PENDING
+        reg.attempts = 0
+        reg.last_error = ""
+        reg.next_attempt_at = timezone.now()
+        reg.save()
+        ClaimEvent.objects.create(
+            claim=claim, actor=actor, action="registration_retry_requested", severity=Severity.INFO,
+            from_state=claim.state, to_state=claim.state, data={},
+        )
+    return claim
+
+
+def acknowledge_alert(*, claim: Claim, actor: User, event_id: int, note: str) -> Claim:
+    """Answer an alert on the record (D11, W6). Nothing is cleared; the
+    acknowledgement is itself an event, and the claim's flag drops only
+    when every alert has one."""
+    if actor.role != Role.REVIEWER:
+        raise NotAllowed("Only a reviewer can acknowledge an alert.", 403)
+    note = (note or "").strip()
+    if not note:
+        raise RuleViolation({"note": "A note is required."})
+    with transaction.atomic():
+        claim = Claim.objects.select_for_update().get(pk=claim.pk)
+        alert = claim.events.filter(pk=event_id, severity=Severity.ALERT).first()
+        if alert is None:
+            raise RuleViolation({"event_id": "No such alert on this claim."})
+        already = claim.events.filter(action="alert_acknowledged", data__event_id=event_id).exists()
+        if already:
+            raise RuleViolation({"event_id": "This alert is already acknowledged."})
+        ClaimEvent.objects.create(
+            claim=claim, actor=actor, action="alert_acknowledged", severity=Severity.INFO,
+            from_state=claim.state, to_state=claim.state, data={"event_id": event_id, "note": note},
+        )
+        open_alerts = claim.events.filter(severity=Severity.ALERT).count()
+        acknowledged = claim.events.filter(action="alert_acknowledged").count()
+        claim.has_open_alert = acknowledged < open_alerts
+        claim.save(update_fields=["has_open_alert", "updated_at"])
     return claim

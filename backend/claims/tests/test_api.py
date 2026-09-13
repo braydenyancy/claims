@@ -114,7 +114,7 @@ def test_detail_lists_deny_choices(api, submitter, reviewer):
     assert deny["fields"] == [{"name": "denial_reason", "type": "choice", "choices": [
         "not_covered", "duplicate", "insufficient_documentation", "out_of_network", "timely_filing",
     ]}]
-    assert body["registration"] == {"status": "registered", "submission_id": "CH-X"}
+    assert body["registration"] == {"status": "not_submitted"}
 
 
 @pytest.mark.django_db
@@ -268,3 +268,87 @@ def test_other_submitters_claim_is_invisible_to_history_and_transition(api, subm
     claim.refresh_from_db()
     assert (claim.state, claim.version) == (State.DRAFT, 0)
     assert [e.action for e in claim.events.all()] == ["create"]
+
+
+from claims.models import ClaimEvent, Registration, RegistrationStatus, Severity
+
+
+def failed_registration(submitter):
+    claim = Claim.objects.create(
+        payer="Acme", service_date=date(2026, 9, 1), billed_amount=Decimal("1.00"),
+        state=State.SUBMITTED, created_by=submitter, has_open_alert=True,
+    )
+    Registration.objects.create(claim=claim, status=RegistrationStatus.FAILED, attempts=5, last_error="down")
+    alert = ClaimEvent.objects.create(
+        claim=claim, actor=None, action="registration_failed", severity=Severity.ALERT,
+        from_state=State.SUBMITTED, to_state=State.SUBMITTED, data={"reason": "down", "attempts": 5},
+    )
+    return claim, alert
+
+
+@pytest.mark.django_db
+def test_registration_block_and_alert_flag(api, submitter, reviewer):
+    claim, _ = failed_registration(submitter)
+    login(api, "rita")
+    body = api.get(f"/api/claims/{claim.id}/").json()
+    assert body["registration"] == {
+        "status": "failed", "attempts": 5, "last_error": "down",
+        "submission_id": "", "next_attempt_at": body["registration"]["next_attempt_at"],
+    }
+    assert body["has_open_alert"] is True
+    listed = api.get("/api/claims/?alert=open").json()
+    assert [c["id"] for c in listed["results"]] == [claim.id]
+    assert listed["results"][0]["has_open_alert"] is True
+    assert api.get("/api/claims/?alert=bogus").status_code == 400
+
+
+@pytest.mark.django_db
+def test_retry_failed_registration(api, submitter, reviewer):
+    claim, _ = failed_registration(submitter)
+    login(api, "rita")
+    response = api.post(f"/api/claims/{claim.id}/registration/retry/")
+    assert response.status_code == 200, response.content
+    assert response.json()["registration"]["status"] == "pending"
+    reg = Registration.objects.get(claim=claim)
+    assert (reg.attempts, reg.last_error) == (0, "")
+    event = claim.events.get(action="registration_retry_requested")
+    assert event.actor == reviewer and event.severity == "info"
+
+    again = api.post(f"/api/claims/{claim.id}/registration/retry/")
+    assert again.status_code == 400 and "errors" in again.json()
+
+
+@pytest.mark.django_db
+def test_retry_is_reviewer_only_and_scoped(api, submitter, reviewer):
+    claim, _ = failed_registration(submitter)
+    login(api, "sam")
+    assert api.post(f"/api/claims/{claim.id}/registration/retry/").status_code == 403
+
+
+@pytest.mark.django_db
+def test_acknowledge_alert_requires_note_and_clears_flag(api, submitter, reviewer):
+    claim, alert = failed_registration(submitter)
+    login(api, "rita")
+    url = f"/api/claims/{claim.id}/acknowledge/"
+    missing = api.post(url, {"event_id": alert.id, "note": "  "}, format="json")
+    assert missing.status_code == 400 and "note" in missing.json()["errors"]
+
+    ok = api.post(url, {"event_id": alert.id, "note": "Called the clearinghouse; resubmitting tomorrow."}, format="json")
+    assert ok.status_code == 200, ok.content
+    assert ok.json()["has_open_alert"] is False
+    ack = claim.events.get(action="alert_acknowledged")
+    assert ack.actor == reviewer and ack.data == {"event_id": alert.id, "note": "Called the clearinghouse; resubmitting tomorrow."}
+
+    twice = api.post(url, {"event_id": alert.id, "note": "again"}, format="json")
+    assert twice.status_code == 400
+
+    other_claim = services.create_draft(created_by=submitter, billed_amount=Decimal("1.00"))
+    wrong = api.post(f"/api/claims/{other_claim.id}/acknowledge/", {"event_id": alert.id, "note": "x"}, format="json")
+    assert wrong.status_code == 400
+
+
+@pytest.mark.django_db
+def test_acknowledge_is_reviewer_only(api, submitter, reviewer):
+    claim, alert = failed_registration(submitter)
+    login(api, "sam")
+    assert api.post(f"/api/claims/{claim.id}/acknowledge/", {"event_id": alert.id, "note": "x"}, format="json").status_code == 403
