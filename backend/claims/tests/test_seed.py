@@ -4,7 +4,7 @@ import pytest
 from django.core.management import call_command
 
 from claims import services
-from claims.models import Claim, ClaimEvent, State, User
+from claims.models import Claim, ClaimEvent, Registration, State, User
 
 
 @pytest.mark.django_db
@@ -13,9 +13,12 @@ def test_seed_creates_users_and_claims_once():
     call_command("seed")
     assert sorted(User.objects.values_list("username", flat=True)) == ["rita", "rob", "sam"]
     assert set(Claim.objects.values_list("state", flat=True)) == set(State.values)
-    assert Claim.objects.count() == 9
-    assert ClaimEvent.objects.filter(action="create").count() == 9
+    assert Claim.objects.count() == 10
+    assert ClaimEvent.objects.filter(action="create").count() == 10
     assert User.objects.get(username="sam").check_password("password")
+    statuses = sorted(Registration.objects.values_list("status", flat=True))
+    assert statuses == ["DONE"] * 5 + ["FAILED", "PENDING"]
+    assert Claim.objects.filter(has_open_alert=True).count() == 1
 
 
 @pytest.mark.django_db(transaction=True)
@@ -36,4 +39,4 @@ def test_seed_is_all_or_nothing_when_interrupted():
     assert Claim.objects.count() == 0
 
     call_command("seed")
-    assert Claim.objects.count() == 9
+    assert Claim.objects.count() == 10

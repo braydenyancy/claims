@@ -25,7 +25,7 @@ from django.utils import timezone
 
 from claims.models import Claim, ClaimEvent, Registration, RegistrationStatus, Severity
 
-from .gateway import Gateway, Outcome, Registered, Rejected, Unknown
+from .gateway import Gateway, Outcome, Registered, Unknown
 
 log = logging.getLogger("claims.worker")
 
@@ -83,6 +83,7 @@ def process(reg: Registration, gateway: Gateway) -> None:
 
 
 def record(reg: Registration, outcome: Outcome | None, *, reconciled: bool = False, duplicate_ids: list[str] | None = None) -> None:
+    assert outcome is not None or duplicate_ids is not None, "record needs an outcome or duplicate ids"
     now = timezone.now()
     with transaction.atomic():
         current = Registration.objects.select_for_update().get(pk=reg.pk)
@@ -128,8 +129,34 @@ def record(reg: Registration, outcome: Outcome | None, *, reconciled: bool = Fal
     log.info("registration claim=%s status=%s attempt=%s", claim.reference, current.status, attempt)
 
 
+def reap() -> int:
+    """Return IN_FLIGHT rows whose lease expired to PENDING. Their next
+    attempt looks up first, so anything the dead worker actually sent is
+    adopted rather than sent again."""
+    cutoff = timezone.now() - timedelta(seconds=_cfg("LEASE_SECONDS"))
+    recovered = 0
+    with transaction.atomic():
+        stale = (
+            Registration.objects.select_for_update(skip_locked=True)
+            .filter(status=RegistrationStatus.IN_FLIGHT, in_flight_since__lt=cutoff)
+            .select_related("claim")
+        )
+        for reg in stale:
+            reg.status = RegistrationStatus.PENDING
+            reg.in_flight_since = None
+            reg.lease_token = ""
+            reg.next_attempt_at = timezone.now()
+            reg.save()
+            _event(reg.claim, "registration_recovered", Severity.WARNING, {"attempt": reg.attempts})
+            recovered += 1
+    if recovered:
+        log.warning("reaped %d expired leases", recovered)
+    return recovered
+
+
 def run_once(gateway: Gateway) -> bool:
     """One unit of work. Returns False when nothing was due."""
+    reap()
     reg = claim_next()
     if reg is None:
         return False

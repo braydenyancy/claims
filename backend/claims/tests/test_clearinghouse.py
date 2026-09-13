@@ -256,3 +256,55 @@ def test_two_workers_claim_different_rows(submitter):
     for t in threads:
         t.join(timeout=10)
     assert sorted(taken) == sorted([a.id, b.id])
+
+
+@pytest.mark.django_db
+def test_reap_returns_expired_leases_to_pending(submitter, settings):
+    settings.CLEARINGHOUSE = {**settings.CLEARINGHOUSE, "LEASE_SECONDS": 60}
+    claim = submitted(submitter)
+    reg = worker.claim_next()
+    Registration.objects.filter(pk=reg.pk).update(in_flight_since=timezone.now() - timedelta(seconds=61))
+    assert worker.reap() == 1
+    reg.refresh_from_db()
+    assert reg.status == RegistrationStatus.PENDING
+    assert reg.lease_token == "" and reg.in_flight_since is None
+    assert events(claim) == [("registration_recovered", "warning")]
+    assert worker.reap() == 0
+
+
+@pytest.mark.django_db
+def test_reap_leaves_live_leases_alone(submitter):
+    submitted(submitter)
+    worker.claim_next()
+    assert worker.reap() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_run_worker_once_processes_one_row(submitter, settings):
+    settings.CLEARINGHOUSE = {**settings.CLEARINGHOUSE, "GATEWAY": "claims.clearinghouse.gateway.FakeGateway"}
+    from django.core.management import call_command
+
+    claim = submitted(submitter)
+    call_command("run_worker", "--once")
+    claim.refresh_from_db()
+    assert claim.registration.status == RegistrationStatus.DONE
+    assert claim.submission_id.startswith("CH-FAKE")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_gateway_is_never_called_inside_a_transaction(submitter, settings):
+    from django.db import connection
+
+    class Strict(gw.FakeGateway):
+        def register(self, reference, amount):
+            assert not connection.in_atomic_block, "register called inside a transaction"
+            return super().register(reference, amount)
+
+        def lookup(self, reference):
+            assert not connection.in_atomic_block, "lookup called inside a transaction"
+            return super().lookup(reference)
+
+    claim = submitted(submitter)
+    worker.run_once(Strict(outcomes=[gw.Unknown("slow")]))
+    claim.refresh_from_db()
+    assert claim.registration.status == RegistrationStatus.DONE
