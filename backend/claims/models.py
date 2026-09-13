@@ -28,9 +28,6 @@ class State(models.TextChoices):
     WITHDRAWN = "WITHDRAWN", "Withdrawn"
 
 
-FINAL_STATES = frozenset({State.APPROVED, State.DENIED, State.WITHDRAWN})
-
-
 class DenialReason(models.TextChoices):
     NOT_COVERED = "not_covered", "Service not covered"
     DUPLICATE = "duplicate", "Duplicate claim"
@@ -47,8 +44,12 @@ class Severity(models.TextChoices):
 
 def generate_reference() -> str:
     """Server-generated, unique, not guessable from a count. This is the
-    idempotency key the clearinghouse recognises (D7)."""
-    return f"CLM-{secrets.token_hex(4).upper()}"
+    idempotency key the clearinghouse recognises (D7).
+
+    64 bits, not 32: by the birthday bound a 32-bit token collides with
+    even odds after ~65k claims, which a single payer reaches. 16 hex
+    characters plus the "CLM-" prefix is 20, the column's max_length."""
+    return f"CLM-{secrets.token_hex(8).upper()}"
 
 
 class Claim(models.Model):

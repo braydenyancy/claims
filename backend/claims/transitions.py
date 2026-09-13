@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Protocol
 
 DRAFT = "DRAFT"
@@ -40,6 +40,7 @@ DENIAL_REASONS = (
 class ClaimView(Protocol):
     """The slice of a claim a rule may read."""
 
+    state: str
     payer: str
     service_date: date | None
     billed_amount: Decimal | None
@@ -57,6 +58,8 @@ class Field:
     name: str
     type: str  # "text" | "decimal" | "choice"
     choices: tuple[str, ...] = ()
+    max_digits: int = 12  # mirrors the column, so input cannot outrun storage
+    decimal_places: int = 2
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,12 @@ def _approve_rules(claim: ClaimView, data: dict, today: date) -> Errors:
         return {"approved_amount": "Approved amount is required."}
     if not isinstance(amount, Decimal):
         return {"approved_amount": "Approved amount must be a decimal number."}
+    try:
+        rounded = amount.quantize(Decimal(1).scaleb(-2))
+    except (InvalidOperation, ValueError):
+        return {"approved_amount": "Approved amount must have at most two decimal places."}
+    if amount != rounded or len(amount.as_tuple().digits) > 12:
+        return {"approved_amount": "Approved amount must have at most two decimal places."}
     if amount <= 0:
         return {"approved_amount": "Approved amount must be greater than zero."}
     if claim.billed_amount is not None and amount > claim.billed_amount:
@@ -148,7 +157,7 @@ class Available:
 
 
 def available_actions(claim: ClaimView, role: str, today: date, state: str | None = None) -> list[Available]:
-    state = state if state is not None else getattr(claim, "state")
+    state = state if state is not None else claim.state
     result = []
     for t in TRANSITIONS.values():
         if state not in t.from_states or t.role != role:

@@ -5,7 +5,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from claims import transitions
-from claims.models import Claim, ClaimEvent, User
+from claims.models import Claim, ClaimEvent, State, User
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -60,7 +60,7 @@ class ClaimDetailSerializer(ClaimListSerializer):
 
     def get_registration(self, claim):
         # Stage 1 shape. Stage 2 backs this with the registration outbox row.
-        if claim.state == "DRAFT":
+        if claim.state == State.DRAFT:
             return {"status": "not_submitted"}
         if claim.submission_id:
             return {"status": "registered", "submission_id": claim.submission_id}
@@ -112,5 +112,11 @@ class TransitionSerializer(serializers.Serializer):
                     raise serializers.ValidationError({f.name: "Must be a decimal number."})
                 if not data[f.name].is_finite():
                     raise serializers.ValidationError({f.name: "Must be a decimal number."})
+                try:
+                    rounded = data[f.name].quantize(Decimal(1).scaleb(-f.decimal_places))
+                except (InvalidOperation, ValueError):
+                    raise serializers.ValidationError({f.name: "Must have at most two decimal places."})
+                if data[f.name] != rounded or len(data[f.name].as_tuple().digits) > f.max_digits:
+                    raise serializers.ValidationError({f.name: "Must have at most two decimal places."})
         attrs["data"] = data
         return attrs

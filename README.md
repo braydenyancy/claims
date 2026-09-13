@@ -1,6 +1,6 @@
 # Claims
 
-Claim review workflow: Django + DRF + PostgreSQL API, Vue 3 frontend.
+Claim review workflow: Django + DRF + PostgreSQL API. Vue 3 frontend arrives in stage 3.
 
 ## Run
 
@@ -20,3 +20,4 @@ Seeded logins (password `password`): `sam` (submitter), `rita` and `rob` (review
 - `backend/` Django project and the `claims` app
 - `vendor/` third-party code used as-is (the clearinghouse client)
 - `docs/` compliance program, decisions, workflows, specs, plans
+  (`docs/policies`, `docs/procedures` and `docs/security` are placeholders)

@@ -3,12 +3,13 @@ from django.db import connection
 from django.middleware.csrf import get_token
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from claims import services
-from claims.models import Claim, Role
+from claims.models import Claim, Role, State
 
 from .serializers import (
     ClaimDetailSerializer,
@@ -76,9 +77,12 @@ class ClaimViewSet(
         qs = Claim.objects.select_related("created_by")
         if self.request.user.role == Role.SUBMITTER:
             qs = qs.filter(created_by=self.request.user)
-        state = self.request.query_params.get("state")
-        if state:
-            qs = qs.filter(state=state)
+        if self.action == "list":
+            state = self.request.query_params.get("state")
+            if state:
+                if state not in State.values:
+                    raise ValidationError({"state": "Unknown state."})
+                qs = qs.filter(state=state)
         return qs
 
     def get_serializer_class(self):
@@ -97,7 +101,7 @@ class ClaimViewSet(
         try:
             claim = services.create_draft(created_by=request.user, **serializer.validated_data)
         except services.NotAllowed as exc:
-            return Response({"detail": str(exc)}, status=exc.status_code)
+            return Response({"detail": str(exc), "errors": {}}, status=exc.status_code)
         return self._detail(claim, status.HTTP_201_CREATED)
 
     def partial_update(self, request, *args, **kwargs):
@@ -107,11 +111,8 @@ class ClaimViewSet(
         try:
             claim = services.update_draft(claim=claim, actor=request.user, **serializer.validated_data)
         except services.NotAllowed as exc:
-            return Response({"detail": str(exc)}, status=exc.status_code)
+            return Response({"detail": str(exc), "errors": {}}, status=exc.status_code)
         return self._detail(claim)
-
-    def update(self, request, *args, **kwargs):
-        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
     @action(detail=True, methods=["get"])
     def history(self, request, pk=None):
@@ -145,7 +146,7 @@ class ClaimViewSet(
         except services.RuleViolation as exc:
             return Response({"detail": str(exc), "errors": exc.errors}, status=status.HTTP_400_BAD_REQUEST)
         except services.NotAllowed as exc:
-            return Response({"detail": str(exc)}, status=exc.status_code)
+            return Response({"detail": str(exc), "errors": {}}, status=exc.status_code)
         return self._detail(claim)
 
     def _conflict(self, claim):

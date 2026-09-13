@@ -155,7 +155,10 @@ def test_notes_are_required(submitter, reviewer, action, state, actor_role, note
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("amount", [None, Decimal("0.00"), Decimal("-1.00"), Decimal("100.01"), "80.00"])
+@pytest.mark.parametrize("amount", [
+    None, Decimal("0.00"), Decimal("-1.00"), Decimal("100.01"), "80.00",
+    Decimal("0.001"), Decimal("50.005"),
+])
 def test_approve_amount_rules(submitter, reviewer, amount):
     claim = make_claim(submitter, State.UNDER_REVIEW)
     data = {} if amount is None else {"approved_amount": amount}

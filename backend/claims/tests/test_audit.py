@@ -46,7 +46,7 @@ def test_database_rejects_raw_delete(claim):
 @pytest.mark.django_db
 def test_claim_gets_server_generated_reference(claim):
     assert claim.reference.startswith("CLM-")
-    assert len(claim.reference) == 12
+    assert len(claim.reference) == 20
 
 
 @pytest.mark.django_db

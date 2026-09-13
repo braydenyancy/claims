@@ -100,6 +100,9 @@ def transition(*, claim_id: int, action: str, actor: User, expected_version: int
         raise NotAllowed(f"Unknown action '{action}'.", 400)
 
     with transaction.atomic():
+        # The 409 depends on READ COMMITTED: the losing transaction's SELECT ... FOR UPDATE
+        # blocks, then re-reads the committed row and sees version + 1, so the check below
+        # fires. Under REPEATABLE READ it would raise a serialization failure instead.
         claim = Claim.objects.select_for_update().get(pk=claim_id)
         _check_owner(claim, actor)
         if claim.version != expected_version:

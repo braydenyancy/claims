@@ -209,3 +209,62 @@ def test_transition_endpoint_error_shapes(api, submitter, reviewer):
 
     inf = api.post(review_url, {"action": "approve", "version": 0, "data": {"approved_amount": "inf"}}, format="json")
     assert inf.status_code == 400
+
+    for amount in ("0.001", "50.005"):
+        too_precise = api.post(
+            review_url, {"action": "approve", "version": 0, "data": {"approved_amount": amount}}, format="json"
+        )
+        assert too_precise.status_code == 400, too_precise.content
+        assert "approved_amount" in too_precise.json()["errors"]
+
+
+@pytest.mark.django_db
+def test_approved_amount_stored_matches_the_audit_record(api, submitter, reviewer):
+    """What the claim stores and what the history says must be the same
+    number: a scale the column would round is refused, not silently kept."""
+    claim = Claim.objects.create(
+        payer="Acme", service_date=date(2026, 9, 1), billed_amount=Decimal("100.00"),
+        submission_id="CH-X", state=State.UNDER_REVIEW, created_by=submitter,
+    )
+    login(api, "rita")
+    response = api.post(
+        f"/api/claims/{claim.id}/transition/",
+        {"action": "approve", "version": 0, "data": {"approved_amount": "50.50"}},
+        format="json",
+    )
+    assert response.status_code == 200, response.content
+
+    claim.refresh_from_db()
+    assert claim.approved_amount == Decimal("50.50")
+    event = claim.events.get(action="approve")
+    assert event.data["approved_amount"] == "50.50"
+
+
+@pytest.mark.django_db
+def test_state_filter_applies_to_the_list_route_only(api, submitter):
+    claim = services.create_draft(created_by=submitter, billed_amount=Decimal("1.00"))
+    login(api, "sam")
+
+    detail = api.get(f"/api/claims/{claim.id}/?state=DENIED")
+    assert detail.status_code == 200 and detail.json()["state"] == "DRAFT"
+
+    unknown = api.get("/api/claims/?state=bogus")
+    assert unknown.status_code == 400
+    assert "state" in unknown.json()
+
+
+@pytest.mark.django_db
+def test_other_submitters_claim_is_invisible_to_history_and_transition(api, submitter):
+    other = User.objects.create_user("other", password="password", role=Role.SUBMITTER)
+    claim = services.create_draft(created_by=other, billed_amount=Decimal("5.00"))
+    login(api, "sam")
+
+    assert api.get(f"/api/claims/{claim.id}/history/").status_code == 404
+    response = api.post(
+        f"/api/claims/{claim.id}/transition/", {"action": "withdraw", "version": 0}, format="json"
+    )
+    assert response.status_code == 404
+
+    claim.refresh_from_db()
+    assert (claim.state, claim.version) == (State.DRAFT, 0)
+    assert [e.action for e in claim.events.all()] == ["create"]

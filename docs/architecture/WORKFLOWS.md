@@ -21,7 +21,7 @@ request → session auth → scope check (own claim?) → load claim FOR UPDATE 
   → action in table? → from-state allowed? → role allowed? → rule passes?
   → write new state + version+1 → write event → commit → 200 {claim}
 ```
-- ✗ not logged in → 401
+- ✗ not logged in → 403 (session auth sends no auth challenge)
 - ✗ not owner (submitter) → 404
 - ✗ version mismatch → 409 {current state, last event}
 - ✗ wrong role → 403 · unknown action / wrong from-state → 400
