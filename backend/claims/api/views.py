@@ -16,6 +16,7 @@ from .serializers import (
     ClaimListSerializer,
     ClaimWriteSerializer,
     LoginSerializer,
+    TransitionSerializer,
     UserSerializer,
 )
 
@@ -117,3 +118,34 @@ class ClaimViewSet(
         claim = self.get_object()
         events = claim.events.select_related("actor").all()
         return Response(ClaimEventSerializer(events, many=True).data)
+
+    @action(detail=True, methods=["post"])
+    def transition(self, request, pk=None):
+        claim = self.get_object()  # 404 for claims outside the user's scope
+        serializer = TransitionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        try:
+            claim = services.transition(
+                claim_id=claim.pk,
+                action=payload["action"],
+                actor=request.user,
+                expected_version=payload["version"],
+                data=payload["data"],
+            )
+        except services.ConflictError as exc:
+            return Response(self._conflict(exc.claim), status=status.HTTP_409_CONFLICT)
+        except services.RuleViolation as exc:
+            return Response({"detail": str(exc), "errors": exc.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except services.NotAllowed as exc:
+            return Response({"detail": str(exc)}, status=exc.status_code)
+        return self._detail(claim)
+
+    def _conflict(self, claim):
+        last = claim.events.select_related("actor").order_by("-created_at", "-id").first()
+        return {
+            "detail": "This claim was changed by someone else. Reload to see the current state.",
+            "current_state": claim.state,
+            "current_version": claim.version,
+            "last_event": ClaimEventSerializer(last).data if last else None,
+        }

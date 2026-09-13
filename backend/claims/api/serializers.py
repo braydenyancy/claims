@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from django.utils import timezone
 from rest_framework import serializers
@@ -87,3 +88,27 @@ class ClaimEventSerializer(serializers.ModelSerializer):
         model = ClaimEvent
         fields = ["id", "action", "from_state", "to_state", "actor", "data", "severity", "created_at"]
         read_only_fields = fields
+
+
+class TransitionSerializer(serializers.Serializer):
+    """Envelope for POST /claims/{id}/transition/. Coerces the data fields
+    the transition declares (decimal strings to Decimal); the rule in the
+    transition table does the rest."""
+
+    action = serializers.CharField()
+    version = serializers.IntegerField(min_value=0)
+    data = serializers.DictField(required=False, default=dict)
+
+    def validate(self, attrs):
+        t = transitions.TRANSITIONS.get(attrs["action"])
+        if t is None:
+            return attrs  # the service answers with a 400 and a message
+        data = dict(attrs["data"])
+        for f in t.fields:
+            if f.type == "decimal" and f.name in data and data[f.name] is not None:
+                try:
+                    data[f.name] = Decimal(str(data[f.name]))
+                except InvalidOperation:
+                    raise serializers.ValidationError({f.name: "Must be a decimal number."})
+        attrs["data"] = data
+        return attrs

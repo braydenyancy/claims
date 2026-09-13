@@ -173,3 +173,25 @@ def test_patch_draft_and_history(api, submitter):
     assert history[1]["data"] == {"payer": "Acme"} and history[1]["actor"] == "sam"
 
     assert api.delete(f"/api/claims/{claim.id}/history/").status_code == 405
+
+
+@pytest.mark.django_db
+def test_transition_endpoint_error_shapes(api, submitter, reviewer):
+    claim = services.create_draft(created_by=submitter, billed_amount=Decimal("1.00"))
+    login(api, "sam")
+    url = f"/api/claims/{claim.id}/transition/"
+
+    rule = api.post(url, {"action": "submit", "version": 0}, format="json")
+    assert rule.status_code == 400 and set(rule.json()["errors"]) == {"payer", "service_date"}
+
+    wrong_role = api.post(url, {"action": "approve", "version": 0, "data": {"approved_amount": "1"}}, format="json")
+    assert wrong_role.status_code == 403
+
+    unknown = api.post(url, {"action": "explode", "version": 0}, format="json")
+    assert unknown.status_code == 400
+
+    bad_decimal = api.post(url, {"action": "approve", "version": 0, "data": {"approved_amount": "lots"}}, format="json")
+    assert bad_decimal.status_code == 400
+
+    ok = api.post(url, {"action": "withdraw", "version": 0}, format="json")
+    assert ok.status_code == 200 and ok.json()["state"] == "WITHDRAWN"
