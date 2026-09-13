@@ -48,7 +48,7 @@ async function acknowledge(eventId: number) {
         <p v-if="errors[event.id]" class="field-error">{{ errors[event.id] }}</p>
         <button :disabled="busy === event.id">Acknowledge</button>
       </form>
-      <p v-else class="muted">Open. A reviewer will acknowledge it.</p>
+      <p v-else class="muted">Open. Awaiting acknowledgement.</p>
     </div>
   </section>
 </template>

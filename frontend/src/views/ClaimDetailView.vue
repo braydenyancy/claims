@@ -107,7 +107,7 @@ onMounted(async () => {
     <p><RouterLink :to="{ name: 'claims' }">← Claims</RouterLink></p>
 
     <p v-if="claim.loading.value && !claim.data.value" class="muted">Loading claim…</p>
-    <p v-else-if="claim.error.value" class="error" role="alert">{{ claim.error.value }} <button @click="reload">Retry</button></p>
+    <p v-else-if="claim.error.value && !claim.data.value" class="error" role="alert">{{ claim.error.value }} <button @click="reload">Retry</button></p>
 
     <template v-else-if="claim.data.value">
       <h1>
@@ -115,6 +115,8 @@ onMounted(async () => {
         <StateBadge :state="claim.data.value.state" :label="stateLabel(claim.data.value.state)" />
       </h1>
       <p><RegistrationBadge :registration="claim.data.value.registration" :labels="meta?.registration_statuses" /></p>
+
+      <p v-if="claim.error.value" class="hint" role="status">Could not refresh: {{ claim.error.value }}. Retrying.</p>
 
       <p v-if="claim.data.value.registration.status === 'failed'">
         <button :disabled="retryBusy" @click="retry">Retry registration</button>
