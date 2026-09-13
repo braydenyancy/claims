@@ -267,12 +267,14 @@ worker-1  | 2026-09-13 18:37:45,925 INFO claims.worker registration claim=CLM-96
 worker-1  | 2026-09-13 18:38:24,745 INFO claims.worker registration claim=CLM-1759526569253140 status=DONE attempt=1
 ```
 
-Fourteen registration attempts across the whole run (the seeded claim, ten
-freshly submitted, and one retry): eleven reached `DONE` on the first try,
-two claims (`CLM-ED04F1D46073277D`, the seed; `CLM-96218D26EADB0D33`, the
-eighth freshly submitted claim, id 18) needed one retry each, and the
-retried `FAILED` seed claim (`CLM-1759526569253140`) reached `DONE` on its
-single retried attempt. No `reaped` line, since no lease ever expired.
+The log covers twelve distinct references across fourteen registration
+attempts: ten reached `DONE` on the only attempt shown for them —
+including `CLM-1759526569253140`, the retried `FAILED` seed claim, whose
+single line here is its post-acknowledgement retry rather than a fresh
+submission — and two claims (`CLM-ED04F1D46073277D`, the seed's original
+registration; `CLM-96218D26EADB0D33`, the eighth freshly submitted claim,
+id 18) needed one retry each, going `PENDING` on attempt 1 before `DONE`
+on attempt 2. No `reaped` line, since no lease ever expired.
 
 ```
 $ docker compose -p stage-2-clearinghouse down
