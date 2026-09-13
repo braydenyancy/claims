@@ -25,12 +25,12 @@ def login(api, username):
 
 @pytest.mark.django_db
 def test_login_logout_me(api, submitter):
-    assert api.get("/api/me/").status_code == 403
+    assert api.get("/api/me/").status_code == 401
     body = login(api, "sam")
     assert body == {"id": submitter.id, "username": "sam", "role": "submitter", "can_create_claims": True}
     assert api.get("/api/me/").json()["username"] == "sam"
     assert api.post("/api/auth/logout/").status_code == 204
-    assert api.get("/api/me/").status_code == 403
+    assert api.get("/api/me/").status_code == 401
 
 
 @pytest.mark.django_db
@@ -94,7 +94,7 @@ def test_detail_available_actions_come_from_the_server(api, submitter, reviewer)
     body = api.get(f"/api/claims/{claim.id}/").json()
     assert [a["action"] for a in body["available_actions"]] == ["submit", "withdraw"]
     assert body["available_actions"][0]["blocked_reason"]  # incomplete draft: rule fails
-    assert body["registration"] == {"status": "not_submitted"}
+    assert body["registration"] == {"status": "not_submitted", "can_retry": False}
 
     api.post("/api/auth/logout/")
     login(api, "rita")
@@ -114,7 +114,7 @@ def test_detail_lists_deny_choices(api, submitter, reviewer):
     assert deny["fields"] == [{"name": "denial_reason", "type": "choice", "choices": [
         "not_covered", "duplicate", "insufficient_documentation", "out_of_network", "timely_filing",
     ]}]
-    assert body["registration"] == {"status": "not_submitted"}
+    assert body["registration"] == {"status": "not_submitted", "can_retry": False}
 
 
 @pytest.mark.django_db
@@ -290,7 +290,7 @@ def test_registration_block_and_alert_flag(api, submitter, reviewer):
     body = api.get(f"/api/claims/{claim.id}/").json()
     assert body["registration"] == {
         "status": "failed", "attempts": 5, "last_error": "down",
-        "submission_id": "", "next_attempt_at": None,
+        "submission_id": "", "next_attempt_at": None, "can_retry": True,
     }
     assert body["has_open_alert"] is True
     listed = api.get("/api/claims/?alert=open").json()
@@ -437,3 +437,82 @@ def test_detail_can_edit_only_for_owner_draft(api, submitter, reviewer):
     api.post("/api/auth/logout/")
     login(api, "rita")
     assert api.get(f"/api/claims/{claim.id}/").json()["can_edit"] is False
+
+
+@pytest.mark.django_db
+def test_detail_alerts_carry_their_acknowledgement_and_capability(api, submitter, reviewer):
+    """The client renders alerts from the detail payload: it never walks
+    history to find the answer, nor a role to know whether it may give one."""
+    claim, alert = failed_registration(submitter)
+
+    login(api, "rita")
+    alerts = api.get(f"/api/claims/{claim.id}/").json()["alerts"]
+    assert len(alerts) == 1
+    assert alerts[0]["event_id"] == alert.id
+    assert alerts[0]["action"] == "registration_failed"
+    assert alerts[0]["data"] == {"reason": "down", "attempts": 5}
+    assert isinstance(alerts[0]["created_at"], str)
+    assert alerts[0]["acknowledgement"] is None
+    assert alerts[0]["can_acknowledge"] is True
+
+    api.post("/api/auth/logout/")
+    login(api, "sam")
+    sam_alerts = api.get(f"/api/claims/{claim.id}/").json()["alerts"]
+    assert sam_alerts[0]["acknowledgement"] is None
+    assert sam_alerts[0]["can_acknowledge"] is False
+
+    api.post("/api/auth/logout/")
+    login(api, "rita")
+    acknowledged = api.post(
+        f"/api/claims/{claim.id}/acknowledge/",
+        {"event_id": alert.id, "note": "Called the clearinghouse."},
+        format="json",
+    )
+    assert acknowledged.status_code == 200, acknowledged.content
+    answered = acknowledged.json()["alerts"][0]
+    assert answered["acknowledgement"]["actor"] == "rita"
+    assert answered["acknowledgement"]["note"] == "Called the clearinghouse."
+    assert isinstance(answered["acknowledgement"]["created_at"], str)
+    assert answered["can_acknowledge"] is False
+
+
+@pytest.mark.django_db
+def test_alerts_are_oldest_first_and_answered_one_by_one(api, submitter, reviewer):
+    claim, first_alert = failed_registration(submitter)
+    second_alert = ClaimEvent.objects.create(
+        claim=claim, actor=None, action="duplicate_submission", severity=Severity.ALERT,
+        from_state=claim.state, to_state=claim.state, data={},
+    )
+    login(api, "rita")
+    body = api.post(
+        f"/api/claims/{claim.id}/acknowledge/",
+        {"event_id": second_alert.id, "note": "Confirmed a duplicate."},
+        format="json",
+    ).json()
+    assert [a["event_id"] for a in body["alerts"]] == [first_alert.id, second_alert.id]
+    assert body["alerts"][0]["acknowledgement"] is None and body["alerts"][0]["can_acknowledge"] is True
+    assert body["alerts"][1]["acknowledgement"]["note"] == "Confirmed a duplicate."
+    assert body["alerts"][1]["can_acknowledge"] is False
+
+
+@pytest.mark.django_db
+def test_registration_can_retry_follows_the_status_and_the_caller(api, submitter, reviewer):
+    claim, _ = failed_registration(submitter)
+
+    login(api, "sam")
+    assert api.get(f"/api/claims/{claim.id}/").json()["registration"]["can_retry"] is False
+
+    api.post("/api/auth/logout/")
+    login(api, "rita")
+    assert api.get(f"/api/claims/{claim.id}/").json()["registration"]["can_retry"] is True
+
+    retried = api.post(f"/api/claims/{claim.id}/registration/retry/")
+    assert retried.status_code == 200, retried.content
+    assert retried.json()["registration"]["status"] == "pending"
+    assert retried.json()["registration"]["can_retry"] is False
+
+
+@pytest.mark.django_db
+def test_unauthenticated_request_is_401_not_403(api, submitter):
+    """403 means "not allowed"; the SPA reads 401 as "sign in again"."""
+    assert api.get("/api/claims/").status_code == 401

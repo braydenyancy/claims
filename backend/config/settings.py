@@ -61,6 +61,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
+    "EXCEPTION_HANDLER": "claims.api.exceptions.exception_handler",
 }
 
 # Session cookie is the credential; CSRF cookie is readable so the SPA

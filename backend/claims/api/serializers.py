@@ -1,11 +1,12 @@
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
 
 from claims import transitions
-from claims.models import Claim, ClaimEvent, Registration, Role, State, User
+from claims.models import Claim, ClaimEvent, Registration, RegistrationStatus, Role, Severity, State, User
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -40,11 +41,12 @@ class ClaimDetailSerializer(ClaimListSerializer):
     available_actions = serializers.SerializerMethodField()
     registration = serializers.SerializerMethodField()
     can_edit = serializers.SerializerMethodField()
+    alerts = serializers.SerializerMethodField()
 
     class Meta(ClaimListSerializer.Meta):
         fields = ClaimListSerializer.Meta.fields + [
             "approved_amount", "denial_reason", "submission_id",
-            "available_actions", "registration", "can_edit",
+            "available_actions", "registration", "can_edit", "alerts",
         ]
         read_only_fields = fields
 
@@ -69,17 +71,54 @@ class ClaimDetailSerializer(ClaimListSerializer):
         ]
 
     def get_registration(self, claim):
+        user = self.context["request"].user
         try:
             reg = claim.registration
         except Registration.DoesNotExist:
-            return {"status": "not_submitted"}
+            return {"status": "not_submitted", "can_retry": False}
         return {
             "status": reg.status.lower(),
             "attempts": reg.attempts,
             "last_error": reg.last_error,
             "submission_id": claim.submission_id,
             "next_attempt_at": reg.next_attempt_at.isoformat() if reg.status == "PENDING" else None,
+            "can_retry": reg.status == RegistrationStatus.FAILED and user.role == Role.REVIEWER,
         }
+
+    def get_alerts(self, claim):
+        """Every alert on the claim with its answer, oldest first. The client
+        renders this; it never re-derives an acknowledgement from history."""
+        user = self.context["request"].user
+        events = list(
+            claim.events.select_related("actor")
+            .filter(Q(severity=Severity.ALERT) | Q(action="alert_acknowledged"))
+            .order_by("created_at", "id")
+        )
+        # The same lookup services.acknowledge_alert uses: an acknowledgement
+        # names the alert it answers in data.event_id.
+        acks = {e.data.get("event_id"): e for e in events if e.action == "alert_acknowledged"}
+        alerts = []
+        for event in events:
+            if event.severity != Severity.ALERT:
+                continue
+            ack = acks.get(event.id)
+            alerts.append(
+                {
+                    "event_id": event.id,
+                    "action": event.action,
+                    "created_at": event.created_at.isoformat(),
+                    "data": event.data,
+                    "acknowledgement": None
+                    if ack is None
+                    else {
+                        "actor": ack.actor.username if ack.actor else None,
+                        "note": ack.data.get("note", ""),
+                        "created_at": ack.created_at.isoformat(),
+                    },
+                    "can_acknowledge": user.role == Role.REVIEWER and ack is None,
+                }
+            )
+        return alerts
 
 
 class ClaimWriteSerializer(serializers.ModelSerializer):
