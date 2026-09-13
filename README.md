@@ -8,6 +8,8 @@ Claim review workflow: Django + DRF + PostgreSQL API, Vue 3 frontend.
 
 API on http://localhost:8000/api/. Health: `GET /api/health/`.
 
+Seeded logins (password `password`): `sam` (submitter), `rita` and `rob` (reviewers).
+
 ## Develop
 
     docker compose up -d postgres

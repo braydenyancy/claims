@@ -1,6 +1,6 @@
 # Stage 1: Backend core
 
-Status: not started. Decisions: D3 to D10, D12. Workflows: W1, W2, W3, W7.
+Status: complete. Decisions: D3 to D10, D12. Workflows: W1, W2, W3, W7.
 
 ## Goal
 
@@ -17,24 +17,24 @@ Pagination beyond DRF defaults.
 
 Each cut is one commit and runnable on its own.
 
-- [ ] **1.1 Skeleton.** `compose.yaml` with postgres and api. Django
+- [x] **1.1 Skeleton.** `compose.yaml` with postgres and api. Django
       project, DRF installed, health endpoint. `docker compose up`
       answers `GET /api/health/`.
-- [ ] **1.2 Models and migration.** `User.role`, `Claim`, `ClaimEvent`.
+- [x] **1.2 Models and migration.** `User.role`, `Claim`, `ClaimEvent`.
       Trigger rejecting UPDATE/DELETE on `ClaimEvent`. Check constraint
       `approved_amount <= billed_amount`.
-- [ ] **1.3 Transition table and service.** `transitions.py` (no Django
+- [x] **1.3 Transition table and service.** `transitions.py` (no Django
       imports) and `services.transition()`. Parameterized tests over
       every action × state × role. Rule tests per transition.
-- [ ] **1.4 Seed.** Idempotent `seed` command: one submitter, two
+- [x] **1.4 Seed.** Idempotent `seed` command: one submitter, two
       reviewers, a handful of claims across states. Runs on startup.
-- [ ] **1.5 Auth and claim API.** Login/logout, `GET /me`. Claim list
+- [x] **1.5 Auth and claim API.** Login/logout, `GET /me`. Claim list
       with `?state=`, create draft, detail with `available_actions`,
       history. Submitter scope enforced in the queryset.
-- [ ] **1.6 Transition endpoint.** `POST /claims/{id}/transition/`
+- [x] **1.6 Transition endpoint.** `POST /claims/{id}/transition/`
       with `{action, version, data}`. Row lock, version check, 409
       body. Concurrency test with two threads against Postgres.
-- [ ] **1.7 NOTES.md paragraph** for stage 1 while it is fresh.
+- [x] **1.7 NOTES.md paragraph** for stage 1 while it is fresh.
 
 ## Data model
 
@@ -59,6 +59,7 @@ GET  /api/me/
 GET  /api/claims/?state=
 POST /api/claims/                {payer, service_date, billed_amount}
 GET  /api/claims/{id}/           claim + available_actions + registration
+PATCH /api/claims/{id}/          {payer?, service_date?, billed_amount?}  drafts only
 GET  /api/claims/{id}/history/
 POST /api/claims/{id}/transition/ {action, version, data}
 ```
@@ -66,7 +67,7 @@ POST /api/claims/{id}/transition/ {action, version, data}
 `available_actions` is a list of `{action, label, fields}` computed
 from the transition table for the current user and current state.
 
-409 body: `{detail, current_state, current_version, last_event}`.
+409 body: `{detail, current_state, current_version, last_event}`. Malformed requests return 400 with the same {detail, errors} shape as rule failures.
 
 ## Done when
 

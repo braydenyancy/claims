@@ -17,15 +17,16 @@ S = Submitter, R = Reviewer. APPROVED, DENIED, WITHDRAWN are final.
 ## W2. Transition request (D3, D4, D5, D6, D8)
 
 ```
-request → session auth → load claim FOR UPDATE → version matches?
+request → session auth → scope check (own claim?) → load claim FOR UPDATE → owner? → version matches?
   → action in table? → from-state allowed? → role allowed? → rule passes?
   → write new state + version+1 → write event → commit → 200 {claim}
 ```
 - ✗ not logged in → 401
 - ✗ not owner (submitter) → 404
 - ✗ version mismatch → 409 {current state, last event}
-- ✗ unknown action / wrong from-state / wrong role → 409 or 403
+- ✗ wrong role → 403 · unknown action / wrong from-state → 400
 - ✗ rule fails → 400 {field errors}
+- ✗ malformed request (bad decimal, negative version) → 400 {detail, errors}
 
 ## W3. Concurrent action (D5)
 
