@@ -1,6 +1,6 @@
 # Claims
 
-Claim review workflow: Django + DRF + PostgreSQL API. Vue 3 frontend arrives in stage 3.
+Claim review workflow: Django + DRF + PostgreSQL API, with a Vue 3 frontend.
 
 ## Run
 

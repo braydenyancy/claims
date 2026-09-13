@@ -1,6 +1,6 @@
 # Stage 3: Frontend
 
-Status: not started. Decisions: D3, D4 (the UI renders actions, never
+Status: complete. Decisions: D3, D4 (the UI renders actions, never
 decides them), D5, D11. Workflows: W1, W2, W3, W6.
 
 ## Goal
@@ -70,19 +70,19 @@ no frontend change.
 
 ## Cuts
 
-- [ ] **3.1 Scaffold.** Vite + Vue + TS project, proxy, compose service,
+- [x] **3.1 Scaffold.** Vite + Vue + TS project, proxy, compose service,
       a page that calls `/api/health/`. `docker compose up` serves it.
-- [ ] **3.2 Session.** Client wrapper with CSRF, login view, router
+- [x] **3.2 Session.** Client wrapper with CSRF, login view, router
       guard, logout. Redirect to login on 403.
-- [ ] **3.3 List.** Filters, empty and loading states, draft creation.
-- [ ] **3.4 Detail, read side.** Badges, fields, history table with
+- [x] **3.3 List.** Filters, empty and loading states, draft creation.
+- [x] **3.4 Detail, read side.** Badges, fields, history table with
       severity highlighting and system events shown with actor "system".
-- [ ] **3.5 Detail, write side.** Action panel and forms from
+- [x] **3.5 Detail, write side.** Action panel and forms from
       `available_actions`; transition call; conflict banner; inline rule
       errors; blocked actions disabled with reason; draft edit.
-- [ ] **3.6 Alerts and registration.** Acknowledge form with note,
+- [x] **3.6 Alerts and registration.** Acknowledge form with note,
       retry button, polling while pending, open-alert filter on the list.
-- [ ] **3.7 Close.** Vitest for `client.ts` error mapping and
+- [x] **3.7 Close.** Vitest for `client.ts` error mapping and
       `ActionForm` rendering from a field schema; browser receipts with
       screenshots of the conflict banner, a blocked action, a rule error,
       the registration badge cycling, and an acknowledgement; NOTES.md

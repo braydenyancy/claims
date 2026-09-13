@@ -89,3 +89,39 @@ rather than convention; pagination on `/history/`.
 and recorded in `docs/`; implementation followed a written plan with a
 subagent per task and a review after each. Every line was read and is
 defended by the author.
+
+## Stage 3: frontend
+
+**Decisions.** The dev server proxies `/api` to the API container, so the
+browser and API share an origin: the session cookie is first-party, CSRF
+is one header read from the cookie, and CORS never came up. `client.ts`
+maps every response into one of three typed errors — `ConflictError`
+(409), `ValidationError` (400, flattened to `{field: message}`), and the
+base `ApiError` — so callers catch by class, not by message-sniffing.
+Every action button and its form come straight from `available_actions`
+and its field schema; a blocked action renders disabled with
+`blocked_reason` as its hint, never hidden. `meta`, `can_edit`, and
+`can_create_claims` carry every state, denial reason, and role decision
+the UI needs, so no state or role name lives in the frontend source:
+`grep -rnE
+"DRAFT|SUBMITTED|UNDER_REVIEW|INFO_REQUESTED|APPROVED|DENIED|WITHDRAWN|submitter|reviewer"
+frontend/src` returns only test-fixture literals and the `App.vue` line
+that echoes `role` as plain text. The conflict banner is built from the
+409 body; the detail view polls every 3 seconds while registration is
+pending or in flight. `useAsync` sequences every call so a slow, stale
+response can't overwrite a newer one, so rapid filter changes never flash
+an old result. The router guard treats a failed session check as signed
+out rather than blanking the page. Every action failure surfaces
+visibly — inline field errors when a form is open, a panel-level message
+for fieldless actions like Submit — and a conflict freezes the whole
+panel, including an open form, until reload.
+
+**Deferred.** Production build and static serving; pagination controls
+beyond "next page"; real-time push; an accessibility pass; the backend
+hygiene list from stages 1 and 2 (Celery, jittered backoff, a vendor
+idempotency key, a TRUNCATE guard, `/history/` pagination).
+
+**AI use.** Same as stages 1 and 2: design was discussed with an AI
+assistant and recorded in `docs/`; implementation followed a written plan
+with a subagent per task and a review after each. Every line was read
+and is defended by the author.
