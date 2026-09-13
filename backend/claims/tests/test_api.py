@@ -118,6 +118,50 @@ def test_detail_lists_deny_choices(api, submitter, reviewer):
 
 
 @pytest.mark.django_db
+def test_patch_refused_for_non_owner(api, submitter, reviewer):
+    claim = services.create_draft(created_by=submitter, payer="Acme", billed_amount=Decimal("1.00"))
+    login(api, "rita")
+    response = api.patch(f"/api/claims/{claim.id}/", {"payer": "Changed"}, format="json")
+    assert response.status_code == 403
+    claim.refresh_from_db()
+    assert claim.payer == "Acme"
+    assert not claim.events.filter(action="edit").exists()
+
+
+@pytest.mark.django_db
+def test_login_and_me_set_csrf_cookie(api, submitter):
+    response = api.post("/api/auth/login/", {"username": "sam", "password": "password"}, format="json")
+    assert response.status_code == 200
+    assert "csrftoken" in response.cookies
+    response = api.get("/api/me/")
+    assert response.status_code == 200
+    assert "csrftoken" in response.cookies
+
+
+@pytest.mark.django_db
+def test_csrf_is_enforced_on_unsafe_requests(submitter):
+    api = APIClient(enforce_csrf_checks=True)
+    response = api.post("/api/auth/login/", {"username": "sam", "password": "password"}, format="json")
+    assert response.status_code == 200
+
+    response = api.post(
+        "/api/claims/",
+        {"payer": "Acme", "service_date": "2026-09-01", "billed_amount": "100.00"},
+        format="json",
+    )
+    assert response.status_code == 403
+
+    token = api.cookies["csrftoken"].value
+    response = api.post(
+        "/api/claims/",
+        {"payer": "Acme", "service_date": "2026-09-01", "billed_amount": "100.00"},
+        format="json",
+        HTTP_X_CSRFTOKEN=token,
+    )
+    assert response.status_code == 201, response.content
+
+
+@pytest.mark.django_db
 def test_patch_draft_and_history(api, submitter):
     claim = services.create_draft(created_by=submitter, billed_amount=Decimal("1.00"))
     login(api, "sam")

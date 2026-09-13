@@ -3,7 +3,6 @@ from django.db import connection
 from django.middleware.csrf import get_token
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -97,7 +96,7 @@ class ClaimViewSet(
         try:
             claim = services.create_draft(created_by=request.user, **serializer.validated_data)
         except services.NotAllowed as exc:
-            raise PermissionDenied(str(exc))
+            return Response({"detail": str(exc)}, status=exc.status_code)
         return self._detail(claim, status.HTTP_201_CREATED)
 
     def partial_update(self, request, *args, **kwargs):

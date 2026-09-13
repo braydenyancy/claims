@@ -74,7 +74,8 @@ def update_draft(*, claim: Claim, actor: User, **fields: Any) -> Claim:
         raise NotAllowed(f"Cannot edit {', '.join(sorted(unknown))}.", 400)
     with transaction.atomic():
         claim = Claim.objects.select_for_update().get(pk=claim.pk)
-        _check_owner(claim, actor)
+        if claim.created_by_id != actor.id:
+            raise NotAllowed("Only the claim's owner can edit it.", 403)
         if claim.state != State.DRAFT:
             raise NotAllowed("Only drafts can be edited.", 400)
         changed = {k: v for k, v in fields.items() if getattr(claim, k) != v}

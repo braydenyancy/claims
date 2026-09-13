@@ -257,3 +257,10 @@ def test_update_draft_refused_outside_draft(submitter):
     claim = make_claim(submitter, State.SUBMITTED)
     with pytest.raises(services.NotAllowed):
         services.update_draft(claim=claim, actor=submitter, payer="X")
+
+
+@pytest.mark.django_db
+def test_update_draft_refused_for_non_owner(submitter, reviewer):
+    claim = services.create_draft(created_by=submitter, billed_amount=Decimal("10.00"))
+    with pytest.raises(services.NotAllowed):
+        services.update_draft(claim=claim, actor=reviewer, payer="X")
