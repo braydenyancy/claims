@@ -1,6 +1,90 @@
 # Notes
 
-## Stage 1: backend core
+One command: `docker compose up`. API on 8000, UI on 5173, seeded logins
+in the README. Receipts for every stage are under `docs/receipts/`, and
+`docs/walkthroughs/` gives the reading order for each stage.
+
+## Assumptions
+
+- Submitters see and act on their own claims only; reviewers see all.
+- A draft may be created incomplete and edited until submitted; the submit
+  rules are checked at submit, not at creation.
+- Denial reasons are a five-value fixed list standing in for standard
+  adjustment reason codes.
+- Service dates are compared against today in UTC.
+- The vendor's `ClearinghouseTimeout` may or may not have recorded a
+  submission; the design treats it as "unknown" and looks up before it
+  ever retries.
+- Only FAILED registrations are retryable; HALTED (more than one
+  submission at the clearinghouse) needs a human at the clearinghouse
+  first.
+
+## Main decisions, and what was rejected
+
+- **One declarative transition table** (`transitions.py`, no Django
+  imports) drives both enforcement and the available-actions list, so
+  they cannot drift. Rejected: `django-fsm` and relatives, a dependency to
+  defend line by line with a messy maintenance history.
+- **Row lock plus version check**, conflict is 409 with the current state
+  and last event. Rejected: lock only (a stale screen gets an unhelpful
+  "invalid transition"); version only (does not serialize the write).
+- **Audit events in the same transaction, immutable at the database** by
+  trigger. Rejected: separate audit and system-log tables; application-only
+  immutability, which a shell bypasses.
+- **Transactional outbox and a worker process** that always looks up
+  before it submits. Rejected: Celery and Redis (a broker for one job;
+  named below as the production swap); calling the vendor inside the
+  request (a lock held across network I/O, and the ID lost on a crash).
+- **Session cookies behind a Vite proxy**, so the SPA and API share an
+  origin. Rejected: tokens in the browser (XSS-exposed); CORS (never
+  needed once the origin is shared).
+- **The UI decides nothing.** State labels, capabilities (`can_edit`,
+  `can_create_claims`, `can_acknowledge`, `can_retry`) and every action
+  come from the API; a grep for state and role names over the frontend
+  source returns nothing. Rejected: a client-side copy of any rule.
+- **No Pinia, no component library.** One composable holds the session.
+
+Full rationale: `docs/architecture/DECISIONS.md`.
+
+## Unfinished
+
+- Pagination controls beyond a "showing N of M" hint; `/history/` is not
+  paginated.
+- A production build and static serving of the frontend; the Vite dev
+  server behind compose is the deliverable.
+- Real-time push; the detail view polls every three seconds while a
+  registration is pending.
+- An accessibility pass.
+
+## Before running this in production
+
+- Replace the poll loop with Celery or an equivalent, keep the outbox.
+- Jittered backoff; a client-side vendor timeout is already in place.
+- Separate database roles so the audit table's immutability is enforced by
+  privilege (including TRUNCATE) rather than trigger and convention.
+- Login throttling and `csrf_protect` on the login route; a secret-key
+  guard that refuses the dev default when `DEBUG` is off; `ALLOWED_HOSTS`
+  narrowed; HTTPS-only cookies.
+- The one window the design cannot close: a vendor call that outlives its
+  lease can let a second worker submit again. It needs a vendor-side
+  idempotency key, which this vendor does not offer, so the timeout keeps
+  every call well inside the lease and the case is caught afterwards as
+  `duplicate_submission`.
+
+## How AI tools were used
+
+Design was discussed with an AI assistant and recorded in `docs/`
+(decisions, workflows, a spec per stage). Implementation followed a
+written plan per stage with an AI subagent per task and an independent
+AI review of every diff, whose findings were fixed before the next task.
+Every review finding and every ruling on it is in the commit history.
+Every line was read and is defended by the author.
+
+---
+
+## Appendix: per-stage detail
+
+### Stage 1: backend core
 
 **Assumptions.** Submitters see and act on their own claims only; reviewers
 see all. A draft may be created incomplete and edited (PATCH) until
@@ -28,16 +112,7 @@ Two guard tests pin the rule module's state, role and denial lists to the
 Django model's, and one spells out all seven transitions as literals so
 the table itself is proved, not only the service's obedience to it.
 
-**Unfinished after stage 1.** Clearinghouse registration (stage 2) and
-the frontend (stage 3). `start_review` is blocked until stage 2 stamps
-a submission ID; the seed stamps one directly where a sample needs it.
-
-**AI use.** Design was discussed with an AI assistant and recorded in
-`docs/`; implementation followed a written plan with a subagent per task
-and a review after each. Every line was read and is defended by the
-author.
-
-## Stage 2: clearinghouse registration
+### Stage 2: clearinghouse registration
 
 **Decisions.** The worker never calls `register` without calling
 `lookup` first: zero IDs, submit; one ID, adopt it; more than one, stop
@@ -85,12 +160,7 @@ backoff instead of `2 ** attempts`; a per-claim idempotency key at the
 vendor if it ever offers one; a TRUNCATE guard enforced by database role
 rather than convention; pagination on `/history/`.
 
-**AI use.** Same as stage 1: design was discussed with an AI assistant
-and recorded in `docs/`; implementation followed a written plan with a
-subagent per task and a review after each. Every line was read and is
-defended by the author.
-
-## Stage 3: frontend
+### Stage 3: frontend
 
 **Decisions.** The dev server proxies `/api` to the API container, so
 the browser and API share an origin: the session cookie is first-party,
@@ -126,8 +196,3 @@ until reload.
 beyond "next page"; real-time push; an accessibility pass; the backend
 hygiene list from stages 1 and 2 (Celery, jittered backoff, a vendor
 idempotency key, a TRUNCATE guard, `/history/` pagination).
-
-**AI use.** Same as stages 1 and 2: design was discussed with an AI
-assistant and recorded in `docs/`; implementation followed a written plan
-with a subagent per task and a review after each. Every line was read
-and is defended by the author.
