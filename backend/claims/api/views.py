@@ -123,7 +123,14 @@ class ClaimViewSet(
     def transition(self, request, pk=None):
         claim = self.get_object()  # 404 for claims outside the user's scope
         serializer = TransitionSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "detail": "Invalid transition request.",
+                    "errors": {k: " ".join(str(m) for m in v) for k, v in serializer.errors.items()},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         payload = serializer.validated_data
         try:
             claim = services.transition(

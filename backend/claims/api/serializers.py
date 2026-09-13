@@ -110,5 +110,7 @@ class TransitionSerializer(serializers.Serializer):
                     data[f.name] = Decimal(str(data[f.name]))
                 except InvalidOperation:
                     raise serializers.ValidationError({f.name: "Must be a decimal number."})
+                if not data[f.name].is_finite():
+                    raise serializers.ValidationError({f.name: "Must be a decimal number."})
         attrs["data"] = data
         return attrs

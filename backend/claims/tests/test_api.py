@@ -190,8 +190,22 @@ def test_transition_endpoint_error_shapes(api, submitter, reviewer):
     unknown = api.post(url, {"action": "explode", "version": 0}, format="json")
     assert unknown.status_code == 400
 
-    bad_decimal = api.post(url, {"action": "approve", "version": 0, "data": {"approved_amount": "lots"}}, format="json")
-    assert bad_decimal.status_code == 400
-
     ok = api.post(url, {"action": "withdraw", "version": 0}, format="json")
     assert ok.status_code == 200 and ok.json()["state"] == "WITHDRAWN"
+
+    review_claim = Claim.objects.create(
+        payer="Acme", service_date=date(2026, 9, 1), billed_amount=Decimal("100.00"),
+        submission_id="CH-X", state=State.UNDER_REVIEW, created_by=submitter,
+    )
+    review_url = f"/api/claims/{review_claim.id}/transition/"
+    login(api, "rita")
+
+    bad_decimal = api.post(review_url, {"action": "approve", "version": 0, "data": {"approved_amount": "lots"}}, format="json")
+    assert bad_decimal.status_code == 400
+    assert "approved_amount" in bad_decimal.json()["errors"]
+
+    nan = api.post(review_url, {"action": "approve", "version": 0, "data": {"approved_amount": "nan"}}, format="json")
+    assert nan.status_code == 400
+
+    inf = api.post(review_url, {"action": "approve", "version": 0, "data": {"approved_amount": "inf"}}, format="json")
+    assert inf.status_code == 400
