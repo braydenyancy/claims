@@ -40,6 +40,7 @@ async function runAction(action: string, data: Record<string, string>) {
   try {
     claim.data.value = await api.claims.transition(current.id, action, current.version, data);
     active.value = null;
+    editing.value = false;
     history.value = await api.claims.history(current.id).catch(() => history.value);
   } catch (e) {
     if (e instanceof ConflictError) conflict.value = e.conflict;
@@ -98,7 +99,7 @@ onMounted(async () => {
       />
 
       <p v-if="claim.data.value.can_edit && !editing"><button @click="editing = true">Edit draft</button></p>
-      <DraftForm v-if="editing" :claim="claim.data.value" @saved="saved" />
+      <DraftForm v-if="editing && claim.data.value.can_edit" :claim="claim.data.value" @saved="saved" />
 
       <section class="card">
         <dl>

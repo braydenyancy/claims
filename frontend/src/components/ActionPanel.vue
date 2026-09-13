@@ -27,6 +27,9 @@ function activeAction() {
 <template>
   <section>
     <h2>Actions</h2>
+    <p v-if="errors.detail || Object.keys(errors).length" class="error" role="alert">
+      {{ errors.detail || Object.values(errors).join(" ") }}
+    </p>
     <p v-if="actions.length === 0" class="muted">No actions available to you right now.</p>
     <div v-else class="actions">
       <span v-for="a in actions" :key="a.action">
@@ -42,7 +45,7 @@ function activeAction() {
       :action="activeAction()!"
       :choice-labels="choiceLabels"
       :errors="errors"
-      :busy="busy"
+      :busy="busy || disabled"
       @submit="(data) => emit('run', active!, data)"
       @cancel="emit('close')"
     />
