@@ -9,8 +9,8 @@ Four steps, each with its own transaction boundary:
   record      one short transaction: write the outcome to the
               registration, the claim, and the event log, but only if
               the lease token still matches.
-  reap        one short transaction: return IN_FLIGHT rows whose lease
-              expired to PENDING, locking only the registration rows.
+  reap        one short transaction per stale row: return IN_FLIGHT rows
+              whose lease expired to PENDING, locking the claim first.
 
 The vendor is never called while a database transaction is open.
 
@@ -149,25 +149,29 @@ def record(reg: Registration, outcome: Outcome | None, *, reconciled: bool = Fal
 def reap() -> int:
     """Return IN_FLIGHT rows whose lease expired to PENDING. Their next
     attempt looks up first, so anything the dead worker actually sent is
-    adopted rather than sent again."""
+    adopted rather than sent again. Lock order: Claim before Registration,
+    the same as record()."""
     cutoff = timezone.now() - timedelta(seconds=_cfg("LEASE_SECONDS"))
+    candidates = list(
+        Registration.objects.filter(status=RegistrationStatus.IN_FLIGHT, in_flight_since__lt=cutoff)
+        .values_list("pk", "claim_id")
+    )
     recovered = 0
-    with transaction.atomic():
-        # Lock order: Claim before Registration, everywhere. The reaper never
-        # takes a claim lock at all — of=("self",) keeps the select_related
-        # join from locking claim rows behind the registration ones.
-        stale = (
-            Registration.objects.select_for_update(skip_locked=True, of=("self",))
-            .filter(status=RegistrationStatus.IN_FLIGHT, in_flight_since__lt=cutoff)
-            .select_related("claim")
-        )
-        for reg in stale:
+    for reg_pk, claim_pk in candidates:
+        with transaction.atomic():
+            claim = Claim.objects.select_for_update(skip_locked=True).filter(pk=claim_pk).first()
+            if claim is None:
+                continue  # a recording worker holds it; next poll
+            reg = Registration.objects.select_for_update().get(pk=reg_pk)
+            if reg.status != RegistrationStatus.IN_FLIGHT or reg.in_flight_since is None or reg.in_flight_since >= cutoff:
+                continue  # already recovered or recorded meanwhile
+            attempt = reg.attempts
             reg.status = RegistrationStatus.PENDING
             reg.in_flight_since = None
             reg.lease_token = ""
             reg.next_attempt_at = timezone.now()
             reg.save()
-            _event(reg.claim, "registration_recovered", Severity.WARNING, {"attempt": reg.attempts})
+            _event(claim, "registration_recovered", Severity.WARNING, {"attempt": attempt})
             recovered += 1
     if recovered:
         log.warning("reaped %d expired leases", recovered)

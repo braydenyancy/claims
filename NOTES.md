@@ -52,8 +52,11 @@ applies an outcome only if the token still matches, so a worker outlived
 by its lease can't overwrite a newer attempt's result — its late write
 becomes a `registration_stale_result` warning event instead. Worker
 shutdown on SIGTERM/SIGINT is bounded by `POLL_SECONDS`, since a signal
-during the idle sleep is only noticed once it ends; fine at the 1 second
-default. An alert is answered, never cleared: acknowledging one requires
+during the idle sleep is only noticed once it ends, and, after a
+timed-out vendor call, by however long that abandoned call takes to
+return, since the interpreter joins its thread at exit; Docker's stop
+grace period covers the realistic case. An alert is answered, never
+cleared: acknowledging one requires
 a note, is itself an event, and `has_open_alert` drops only once every
 alert has a matching acknowledgement. HALTED means the clearinghouse
 holds more than one submission for a reference; a human resolves which

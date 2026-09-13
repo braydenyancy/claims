@@ -10,7 +10,7 @@ from decimal import Decimal
 
 import pytest
 from django.core.management import call_command
-from django.db import connection
+from django.db import connection, transaction
 from django.utils import timezone
 
 from claims import services
@@ -297,6 +297,43 @@ def test_reap_leaves_live_leases_alone(submitter):
     submitted(submitter)
     worker.claim_next()
     assert worker.reap() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reap_skips_a_row_whose_claim_is_locked_elsewhere(submitter, settings):
+    """reap() locks the claim before the registration, the same order as
+    record(). A stale row whose claim another worker is still holding must
+    be skipped rather than waited on, or the two workers could deadlock."""
+    settings.CLEARINGHOUSE = {**settings.CLEARINGHOUSE, "LEASE_SECONDS": 60}
+    claim = submitted(submitter)
+    reg = worker.claim_next()
+    Registration.objects.filter(pk=reg.pk).update(in_flight_since=timezone.now() - timedelta(seconds=61))
+
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_claim_lock():
+        try:
+            with transaction.atomic():
+                Claim.objects.select_for_update().get(pk=claim.pk)
+                locked.set()
+                release.wait(timeout=5)
+        finally:
+            connection.close()
+
+    t = threading.Thread(target=hold_claim_lock)
+    t.start()
+    try:
+        assert locked.wait(timeout=5)
+        assert worker.reap() == 0
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+    assert worker.reap() == 1
+    reg.refresh_from_db()
+    assert reg.status == RegistrationStatus.PENDING
+    assert reg.lease_token == "" and reg.in_flight_since is None
 
 
 @pytest.mark.django_db(transaction=True)
