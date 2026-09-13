@@ -9,7 +9,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from claims import services
-from claims.models import Claim, Role, State, User
+from claims.models import Claim, ClaimEvent, Registration, RegistrationStatus, Role, Severity, State, User
 
 
 @pytest.fixture
@@ -270,9 +270,6 @@ def test_other_submitters_claim_is_invisible_to_history_and_transition(api, subm
     assert [e.action for e in claim.events.all()] == ["create"]
 
 
-from claims.models import ClaimEvent, Registration, RegistrationStatus, Severity
-
-
 def failed_registration(submitter):
     claim = Claim.objects.create(
         payer="Acme", service_date=date(2026, 9, 1), billed_amount=Decimal("1.00"),
@@ -293,13 +290,41 @@ def test_registration_block_and_alert_flag(api, submitter, reviewer):
     body = api.get(f"/api/claims/{claim.id}/").json()
     assert body["registration"] == {
         "status": "failed", "attempts": 5, "last_error": "down",
-        "submission_id": "", "next_attempt_at": body["registration"]["next_attempt_at"],
+        "submission_id": "", "next_attempt_at": None,
     }
     assert body["has_open_alert"] is True
     listed = api.get("/api/claims/?alert=open").json()
     assert [c["id"] for c in listed["results"]] == [claim.id]
     assert listed["results"][0]["has_open_alert"] is True
     assert api.get("/api/claims/?alert=bogus").status_code == 400
+
+    pending_claim = Claim.objects.create(
+        payer="Acme", service_date=date(2026, 9, 1), billed_amount=Decimal("1.00"),
+        state=State.SUBMITTED, created_by=submitter,
+    )
+    Registration.objects.create(claim=pending_claim)
+    pending_body = api.get(f"/api/claims/{pending_claim.id}/").json()
+    assert pending_body["registration"]["status"] == "pending"
+    assert isinstance(pending_body["registration"]["next_attempt_at"], str)
+
+
+@pytest.mark.django_db
+def test_retry_refused_without_a_registration_row(api, submitter, reviewer):
+    draft = services.create_draft(created_by=submitter, billed_amount=Decimal("1.00"))
+    login(api, "rita")
+    response = api.post(f"/api/claims/{draft.id}/registration/retry/")
+    assert response.status_code == 400
+    assert response.json()["errors"] == {}
+
+
+@pytest.mark.django_db
+def test_retry_refused_when_halted(api, submitter, reviewer):
+    claim, _ = failed_registration(submitter)
+    Registration.objects.filter(claim=claim).update(status=RegistrationStatus.HALTED)
+    login(api, "rita")
+    response = api.post(f"/api/claims/{claim.id}/registration/retry/")
+    assert response.status_code == 400
+    assert "HALTED" in response.json()["detail"]
 
 
 @pytest.mark.django_db
@@ -319,10 +344,24 @@ def test_retry_failed_registration(api, submitter, reviewer):
 
 
 @pytest.mark.django_db
-def test_retry_is_reviewer_only_and_scoped(api, submitter, reviewer):
-    claim, _ = failed_registration(submitter)
+def test_retry_and_acknowledge_are_reviewer_only(api, submitter, reviewer):
+    claim, alert = failed_registration(submitter)
     login(api, "sam")
     assert api.post(f"/api/claims/{claim.id}/registration/retry/").status_code == 403
+    assert api.post(
+        f"/api/claims/{claim.id}/acknowledge/", {"event_id": alert.id, "note": "x"}, format="json"
+    ).status_code == 403
+
+
+@pytest.mark.django_db
+def test_retry_and_acknowledge_are_scoped(api, submitter, reviewer):
+    other = User.objects.create_user("other", password="password", role=Role.SUBMITTER)
+    claim, alert = failed_registration(other)
+    login(api, "sam")
+    assert api.post(f"/api/claims/{claim.id}/registration/retry/").status_code == 404
+    assert api.post(
+        f"/api/claims/{claim.id}/acknowledge/", {"event_id": alert.id, "note": "x"}, format="json"
+    ).status_code == 404
 
 
 @pytest.mark.django_db
@@ -332,6 +371,9 @@ def test_acknowledge_alert_requires_note_and_clears_flag(api, submitter, reviewe
     url = f"/api/claims/{claim.id}/acknowledge/"
     missing = api.post(url, {"event_id": alert.id, "note": "  "}, format="json")
     assert missing.status_code == 400 and "note" in missing.json()["errors"]
+
+    too_long = api.post(url, {"event_id": alert.id, "note": "x" * 2001}, format="json")
+    assert too_long.status_code == 400 and "note" in too_long.json()["errors"]
 
     ok = api.post(url, {"event_id": alert.id, "note": "Called the clearinghouse; resubmitting tomorrow."}, format="json")
     assert ok.status_code == 200, ok.content
@@ -348,7 +390,19 @@ def test_acknowledge_alert_requires_note_and_clears_flag(api, submitter, reviewe
 
 
 @pytest.mark.django_db
-def test_acknowledge_is_reviewer_only(api, submitter, reviewer):
-    claim, alert = failed_registration(submitter)
-    login(api, "sam")
-    assert api.post(f"/api/claims/{claim.id}/acknowledge/", {"event_id": alert.id, "note": "x"}, format="json").status_code == 403
+def test_acknowledging_one_of_two_alerts_leaves_the_flag_open(api, submitter, reviewer):
+    claim, first_alert = failed_registration(submitter)
+    second_alert = ClaimEvent.objects.create(
+        claim=claim, actor=None, action="duplicate_submission", severity=Severity.ALERT,
+        from_state=claim.state, to_state=claim.state, data={},
+    )
+    login(api, "rita")
+    url = f"/api/claims/{claim.id}/acknowledge/"
+
+    first = api.post(url, {"event_id": first_alert.id, "note": "Looking into it."}, format="json")
+    assert first.status_code == 200, first.content
+    assert first.json()["has_open_alert"] is True
+
+    second = api.post(url, {"event_id": second_alert.id, "note": "Confirmed a duplicate."}, format="json")
+    assert second.status_code == 200, second.content
+    assert second.json()["has_open_alert"] is False

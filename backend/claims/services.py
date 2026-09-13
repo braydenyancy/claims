@@ -149,7 +149,10 @@ def retry_registration(*, claim: Claim, actor: User) -> Claim:
         raise NotAllowed("Only a reviewer can retry a registration.", 403)
     with transaction.atomic():
         claim = Claim.objects.select_for_update().get(pk=claim.pk)
-        reg = Registration.objects.select_for_update().get(claim=claim)
+        try:
+            reg = Registration.objects.select_for_update().get(claim=claim)
+        except Registration.DoesNotExist:
+            raise NotAllowed("This claim has no registration to retry.", 400)
         if reg.status != RegistrationStatus.FAILED:
             raise NotAllowed(f"Registration is {reg.status}, not FAILED.", 400)
         reg.status = RegistrationStatus.PENDING

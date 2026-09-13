@@ -129,4 +129,4 @@ class TransitionSerializer(serializers.Serializer):
 
 class AcknowledgeSerializer(serializers.Serializer):
     event_id = serializers.IntegerField(min_value=1)
-    note = serializers.CharField(allow_blank=True, trim_whitespace=False)
+    note = serializers.CharField(allow_blank=True, trim_whitespace=False, max_length=2000)
