@@ -27,7 +27,7 @@ def login(api, username):
 def test_login_logout_me(api, submitter):
     assert api.get("/api/me/").status_code == 403
     body = login(api, "sam")
-    assert body == {"id": submitter.id, "username": "sam", "role": "submitter"}
+    assert body == {"id": submitter.id, "username": "sam", "role": "submitter", "can_create_claims": True}
     assert api.get("/api/me/").json()["username"] == "sam"
     assert api.post("/api/auth/logout/").status_code == 204
     assert api.get("/api/me/").status_code == 403
@@ -406,3 +406,34 @@ def test_acknowledging_one_of_two_alerts_leaves_the_flag_open(api, submitter, re
     second = api.post(url, {"event_id": second_alert.id, "note": "Confirmed a duplicate."}, format="json")
     assert second.status_code == 200, second.content
     assert second.json()["has_open_alert"] is False
+
+
+@pytest.mark.django_db
+def test_meta_lists_closed_lists(api, submitter):
+    login(api, "sam")
+    body = api.get("/api/meta/").json()
+    assert [s["value"] for s in body["states"]] == list(State.values)
+    assert all({"value", "label"} <= set(s) for s in body["states"])
+    assert [d["value"] for d in body["denial_reasons"]] == [
+        "not_covered", "duplicate", "insufficient_documentation", "out_of_network", "timely_filing",
+    ]
+    assert [r["value"] for r in body["registration_statuses"]] == ["pending", "in_flight", "done", "failed", "halted"]
+
+
+@pytest.mark.django_db
+def test_user_payload_carries_capabilities(api, submitter, reviewer):
+    assert login(api, "sam")["can_create_claims"] is True
+    api.post("/api/auth/logout/")
+    assert login(api, "rita")["can_create_claims"] is False
+
+
+@pytest.mark.django_db
+def test_detail_can_edit_only_for_owner_draft(api, submitter, reviewer):
+    claim = services.create_draft(created_by=submitter, payer="Acme", service_date=date(2026, 9, 1), billed_amount=Decimal("5.00"))
+    login(api, "sam")
+    assert api.get(f"/api/claims/{claim.id}/").json()["can_edit"] is True
+    api.post(f"/api/claims/{claim.id}/transition/", {"action": "submit", "version": 0}, format="json")
+    assert api.get(f"/api/claims/{claim.id}/").json()["can_edit"] is False
+    api.post("/api/auth/logout/")
+    login(api, "rita")
+    assert api.get(f"/api/claims/{claim.id}/").json()["can_edit"] is False

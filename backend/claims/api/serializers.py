@@ -5,13 +5,18 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from claims import transitions
-from claims.models import Claim, ClaimEvent, Registration, State, User
+from claims.models import Claim, ClaimEvent, Registration, Role, State, User
 
 
 class UserSerializer(serializers.ModelSerializer):
+    can_create_claims = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ["id", "username", "role"]
+        fields = ["id", "username", "role", "can_create_claims"]
+
+    def get_can_create_claims(self, user):
+        return user.role == Role.SUBMITTER
 
 
 class LoginSerializer(serializers.Serializer):
@@ -34,13 +39,18 @@ class ClaimListSerializer(serializers.ModelSerializer):
 class ClaimDetailSerializer(ClaimListSerializer):
     available_actions = serializers.SerializerMethodField()
     registration = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
 
     class Meta(ClaimListSerializer.Meta):
         fields = ClaimListSerializer.Meta.fields + [
             "approved_amount", "denial_reason", "submission_id",
-            "available_actions", "registration",
+            "available_actions", "registration", "can_edit",
         ]
         read_only_fields = fields
+
+    def get_can_edit(self, claim):
+        user = self.context["request"].user
+        return claim.state == State.DRAFT and claim.created_by_id == user.id
 
     def get_available_actions(self, claim):
         user = self.context["request"].user

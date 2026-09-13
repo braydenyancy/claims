@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from claims import services
-from claims.models import Claim, Role, State
+from claims.models import Claim, DenialReason, RegistrationStatus, Role, State
 
 from .serializers import (
     AcknowledgeSerializer,
@@ -59,6 +59,23 @@ class MeView(APIView):
     def get(self, request):
         get_token(request)
         return Response(UserSerializer(request.user).data)
+
+
+class MetaView(APIView):
+    """The closed lists the UI needs for filters and labels. The UI
+    renders these; it never decides anything from them (D4)."""
+
+    def get(self, request):
+        def options(choices, lower=False):
+            return [{"value": v.lower() if lower else v, "label": label} for v, label in choices]
+
+        return Response(
+            {
+                "states": options(State.choices),
+                "denial_reasons": options(DenialReason.choices),
+                "registration_statuses": options(RegistrationStatus.choices, lower=True),
+            }
+        )
 
 
 class ClaimViewSet(
