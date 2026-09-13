@@ -1,22 +1,22 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
+import { useSession } from "./composables/useSession";
 
-const status = ref("checking…");
+const session = useSession();
+const router = useRouter();
 
-onMounted(async () => {
-  try {
-    const res = await fetch("/api/health/");
-    const body = await res.json();
-    status.value = `api ${body.status}, database ${body.database}`;
-  } catch {
-    status.value = "api unreachable";
-  }
-});
+async function logout() {
+  await session.logout();
+  await router.push({ name: "login" });
+}
 </script>
 
 <template>
-  <main>
-    <h1>Claims</h1>
-    <p>{{ status }}</p>
-  </main>
+  <nav v-if="session.user.value">
+    <RouterLink :to="{ name: 'claims' }">Claims</RouterLink>
+    <span class="spacer"></span>
+    <span class="muted">{{ session.user.value.username }} · {{ session.user.value.role }}</span>
+    <button @click="logout">Sign out</button>
+  </nav>
+  <RouterView />
 </template>
