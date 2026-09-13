@@ -35,6 +35,22 @@ export interface Registration {
   last_error?: string;
   submission_id?: string;
   next_attempt_at?: string | null;
+  can_retry?: boolean;
+}
+
+export interface Acknowledgement {
+  actor: string | null;
+  note: string;
+  created_at: string;
+}
+
+export interface Alert {
+  event_id: number;
+  action: string;
+  created_at: string;
+  data: Record<string, unknown>;
+  acknowledgement: Acknowledgement | null;
+  can_acknowledge: boolean;
 }
 
 export interface ClaimSummary {
@@ -58,6 +74,7 @@ export interface ClaimDetail extends ClaimSummary {
   available_actions: AvailableAction[];
   registration: Registration;
   can_edit: boolean;
+  alerts: Alert[];
 }
 
 export interface ClaimEvent {

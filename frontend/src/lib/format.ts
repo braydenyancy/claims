@@ -15,7 +15,7 @@ export function when(iso: string | null | undefined): string {
 
 export function ago(iso: string): string {
   const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
-  if (seconds < 60) return `${seconds} seconds ago`;
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"} ago`;
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
   const hours = Math.round(minutes / 60);

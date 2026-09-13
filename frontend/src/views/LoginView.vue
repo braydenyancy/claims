@@ -12,12 +12,20 @@ const password = ref("");
 const error = ref("");
 const busy = ref(false);
 
+// Only a path on this app is a safe place to land: "//evil.example" is a
+// protocol-relative URL, and anything else is not ours to navigate to.
+function nextPath(): string | null {
+  const next = route.query.next;
+  if (typeof next !== "string" || !next.startsWith("/") || next.startsWith("//")) return null;
+  return next;
+}
+
 async function submit() {
   error.value = "";
   busy.value = true;
   try {
     await session.login(username.value, password.value);
-    await router.push(typeof route.query.next === "string" ? route.query.next : { name: "claims" });
+    await router.push(nextPath() ?? { name: "claims" });
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : "Could not reach the server.";
   } finally {

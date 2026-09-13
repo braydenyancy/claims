@@ -9,6 +9,11 @@ Compose project `stage-3-frontend`. Compose commands ran from the repository roo
 curl session (logged in as `rob`, forcing the conflict in screenshot 7) ran from `/tmp`
 with cookie jar `rob.jar`, the same pattern stage 2's receipts used.
 
+**Updated after the final-review fix wave** (backend `93aac6b`, frontend the commit that
+carries this file): screenshot 6 retaken, the spec's grep re-run and now empty, and both
+suites re-run at their new counts. Everything else below is the original 2026-09-13
+record and was not re-captured.
+
 ## Clean build
 
 ```
@@ -52,12 +57,15 @@ input value and dispatching an `input` event before submit.
    event=registration_succeeded`. No manual reload: the detail view's own 3-second poll
    (active because `registration.status` was `pending`) picked up the change and the badge
    now reads **Done** with the clearinghouse submission ID.
-6. **`06-rule-error.png`** — signed out `sam`, signed in as `rita`. Opened
-   `CLM-A463DF976284860F` (claim 4, Submitted, billed `$450.00`, already registered from
-   the seed), clicked "Start review", clicked "Approve", entered `999.00` (above the
-   billed amount), clicked the form's Approve button. The panel shows "Approved amount
-   cannot exceed the billed amount." both above the actions and under the field; the form
-   stays open with `999.00` still in the input.
+6. **`06-rule-error.png`** — **retaken 2026-09-13 after the final-review fixes**, with
+   `docker compose up -d api frontend` and the same browser tools. Signed in as `rita`,
+   opened `CLM-1B899336F7082414` (claim 5, Under review, billed `$900.00`), clicked
+   "Approve", entered `1500.00` (above the billed amount), submitted the form. The rule
+   error "Approved amount cannot exceed the billed amount." now appears **once**, under
+   the field it belongs to, with the form still open and `1500.00` still in the input —
+   the panel-level copy is suppressed while a form is up, so the same sentence is no
+   longer printed twice. Counted in the page at capture time:
+   `[...document.querySelectorAll(".error, .field-error")].length === 1`.
 7. **`07-conflict.png`** — with rita's Approve form still open on claim 4 at the version
    she loaded it at (`2`), a second session (`curl`, cookie jar `/tmp/rob.jar`, logged in
    as `rob`, `X-CSRFToken` read from the jar) posted `{"action": "approve", "version": 2,
@@ -84,32 +92,23 @@ input value and dispatching an `input` event before submit.
 
 ## The grep from the spec's done criteria
 
-As written:
+Re-run after the final-review fixes, exactly as the spec writes it:
 
 ```
 $ grep -rnE "DRAFT|SUBMITTED|UNDER_REVIEW|INFO_REQUESTED|APPROVED|DENIED|WITHDRAWN|submitter|reviewer" frontend/src
-frontend/src/components/ConflictBanner.test.ts:11:          current_state: "UNDER_REVIEW",
-frontend/src/api/client.test.ts:21:    const body = { detail: "changed", current_state: "APPROVED", current_version: 3, last_event: null };
-```
-
-Both hits are literal values inside Vitest fixtures (`ConflictBanner.test.ts` builds a
-sample 409 body to test the banner's rendering; `client.test.ts` builds a sample 409 body
-to test `ConflictError` parsing) — test data standing in for what the API would actually
-send, not a rule or a state name baked into application source.
-
-With test files excluded, as the task instructed:
-
-```
-$ grep -rnE "DRAFT|SUBMITTED|UNDER_REVIEW|INFO_REQUESTED|APPROVED|DENIED|WITHDRAWN|submitter|reviewer" frontend/src --exclude='*.test.ts'
 (no output)
 ```
 
-Empty. `App.vue` renders the signed-in user's role with `{{ session.user.value.role }}` —
-it displays whatever string the API's `/api/me/` sends, but the source itself never
-spells out "submitter" or "reviewer", so it does not match this pattern; the brief
-anticipated this line might or might not show up here, and here it does not.
+It returned nothing. The two hits it used to have were Vitest fixtures standing in for
+what the API would send (`ConflictBanner.test.ts` and `client.test.ts` each built a sample
+409 body); both now use the placeholder `STATE_A`, which reads as a state name to the
+component under test and to nothing else. `App.vue` renders the signed-in user's role with
+`{{ session.user.value.role }}` — it displays whatever string `/api/me/` sends, and the
+source itself never spells a role out, so it does not match either.
 
 ## Tests
+
+Re-run after the final-review fixes.
 
 ```
 $ cd frontend && npm run typecheck
@@ -119,28 +118,38 @@ $ cd frontend && npm run typecheck
 
 $ cd frontend && npm test
  RUN  v3.2.7
- ✓ src/api/client.test.ts (6 tests) 10ms
- ✓ src/components/ConflictBanner.test.ts (1 test) 7ms
- ✓ src/components/ActionPanel.test.ts (2 tests) 15ms
- ✓ src/components/ActionForm.test.ts (3 tests) 20ms
- Test Files  4 passed (4)
-      Tests  12 passed (12)
+ ✓ src/api/client.test.ts (6 tests) 9ms
+ ✓ src/components/ConflictBanner.test.ts (3 tests) 10ms
+ ✓ src/composables/useAsync.test.ts (3 tests) 15ms
+ ✓ src/components/ActionPanel.test.ts (3 tests) 20ms
+ ✓ src/components/ActionForm.test.ts (3 tests) 22ms
+ ✓ src/components/AlertPanel.test.ts (2 tests) 29ms
+ Test Files  6 passed (6)
+      Tests  20 passed (20)
 ```
 
 ```
 $ cd backend && uv run pytest -q
 ........................................................................ [ 36%]
-........................................................................ [ 73%]
-....................................................                     [100%]
-196 passed in 38.56s
+........................................................................ [ 72%]
+........................................................                 [100%]
+200 passed in 39.20s
 ```
 
 (Postgres reachable on host port 5433 per `backend/.env.example`, up via `docker compose
--p stage-3-frontend up -d postgres`.)
+up -d postgres`.)
 
 ## Teardown
 
 ```
 $ docker compose -p stage-3-frontend down
 $ docker compose -p stage-3-frontend up -d postgres
+```
+
+After the screenshot-6 retake, the two services it needed were stopped again and postgres
+left up for the test suite:
+
+```
+$ docker compose up -d api frontend
+$ docker compose stop api frontend
 ```

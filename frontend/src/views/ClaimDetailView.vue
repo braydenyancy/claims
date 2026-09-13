@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { api, ConflictError, ValidationError } from "../api/client";
 import type { ClaimDetail, ClaimEvent, ConflictBody, Meta } from "../api/types";
 import ActionPanel from "../components/ActionPanel.vue";
@@ -9,10 +10,15 @@ import DraftForm from "../components/DraftForm.vue";
 import HistoryTable from "../components/HistoryTable.vue";
 import RegistrationBadge from "../components/RegistrationBadge.vue";
 import StateBadge from "../components/StateBadge.vue";
-import { useAsync } from "../composables/useAsync";
+import { isSignedOut, useAsync } from "../composables/useAsync";
+import { useSession } from "../composables/useSession";
 import { money, when } from "../lib/format";
 
 const props = defineProps<{ id: number }>();
+
+const session = useSession();
+const router = useRouter();
+const route = useRoute();
 
 const meta = ref<Meta | null>(null);
 const claim = useAsync<ClaimDetail>();
@@ -23,14 +29,32 @@ const active = ref<string | null>(null);
 const actionErrors = ref<Record<string, string>>({});
 const actionBusy = ref(false);
 const editing = ref(false);
+const retryBusy = ref(false);
+const retryError = ref("");
 
 function stateLabel(value: string) {
   return meta.value?.states.find((s) => s.value === value)?.label;
 }
 
+function denialLabel(value: string) {
+  return meta.value?.denial_reasons.find((d) => d.value === value)?.label ?? value;
+}
+
+// The session is gone, not merely insufficient: send the caller to sign in
+// rather than showing them a message they can do nothing about.
+async function signInAgain() {
+  session.clear();
+  await router.push({ name: "login", query: { next: route.fullPath } });
+}
+
 async function reload() {
-  const [c, h] = await Promise.all([claim.run(() => api.claims.get(props.id)), api.claims.history(props.id).catch(() => [])]);
-  if (c) history.value = h;
+  retryError.value = "";
+  // A failed history refresh keeps the history already on screen.
+  const [c, h] = await Promise.all([
+    claim.run(() => api.claims.get(props.id)),
+    api.claims.history(props.id).catch(() => null),
+  ]);
+  if (c && h !== null) history.value = h;
 }
 
 async function runAction(action: string, data: Record<string, string>) {
@@ -39,12 +63,13 @@ async function runAction(action: string, data: Record<string, string>) {
   actionErrors.value = {};
   actionBusy.value = true;
   try {
-    claim.data.value = await api.claims.transition(current.id, action, current.version, data);
+    claim.set(await api.claims.transition(current.id, action, current.version, data));
     active.value = null;
     editing.value = false;
     history.value = await api.claims.history(current.id).catch(() => history.value);
   } catch (e) {
-    if (e instanceof ConflictError) conflict.value = e.conflict;
+    if (isSignedOut(e)) await signInAgain();
+    else if (e instanceof ConflictError) conflict.value = e.conflict;
     else if (e instanceof ValidationError) actionErrors.value = e.errors;
     else actionErrors.value = { detail: e instanceof Error ? e.message : "Could not perform the action." };
   } finally {
@@ -56,17 +81,16 @@ async function afterConflict() {
   conflict.value = null;
   active.value = null;
   actionErrors.value = {};
+  retryError.value = "";
   await reload();
 }
 
 async function saved(updated: ClaimDetail) {
-  claim.data.value = updated;
+  claim.set(updated);
   editing.value = false;
   history.value = await api.claims.history(updated.id).catch(() => history.value);
 }
 
-const retryBusy = ref(false);
-const retryError = ref("");
 let timer: ReturnType<typeof setInterval> | null = null;
 
 async function retry() {
@@ -75,10 +99,11 @@ async function retry() {
   retryBusy.value = true;
   retryError.value = "";
   try {
-    claim.data.value = await api.claims.retry(current.id);
+    claim.set(await api.claims.retry(current.id));
     history.value = await api.claims.history(current.id).catch(() => history.value);
   } catch (e) {
-    retryError.value = e instanceof Error ? e.message : "Could not retry.";
+    if (isSignedOut(e)) await signInAgain();
+    else retryError.value = e instanceof Error ? e.message : "Could not retry.";
   } finally {
     retryBusy.value = false;
   }
@@ -118,12 +143,12 @@ onMounted(async () => {
 
       <p v-if="claim.error.value" class="hint" role="status">Could not refresh: {{ claim.error.value }}. Retrying.</p>
 
-      <p v-if="claim.data.value.registration.status === 'failed'">
+      <p v-if="claim.data.value.registration.can_retry">
         <button :disabled="retryBusy" @click="retry">Retry registration</button>
         <span v-if="retryError" class="error"> {{ retryError }}</span>
       </p>
 
-      <AlertPanel :events="history" :claim-id="claim.data.value.id" :can-act="true" @updated="saved" />
+      <AlertPanel :alerts="claim.data.value.alerts" :claim-id="claim.data.value.id" @updated="saved" />
 
       <ConflictBanner v-if="conflict" :conflict="conflict" @reload="afterConflict" />
 
@@ -136,7 +161,7 @@ onMounted(async () => {
         :active="active"
         @run="runAction"
         @open="(a) => { active = a; actionErrors = {}; }"
-        @close="active = null"
+        @close="() => { active = null; actionErrors = {}; }"
       />
 
       <p v-if="claim.data.value.can_edit && !editing"><button @click="editing = true">Edit draft</button></p>
@@ -148,7 +173,7 @@ onMounted(async () => {
           <dt>Service date</dt><dd>{{ claim.data.value.service_date ?? "—" }}</dd>
           <dt>Billed</dt><dd>{{ money(claim.data.value.billed_amount) }}</dd>
           <dt>Approved</dt><dd>{{ money(claim.data.value.approved_amount) }}</dd>
-          <dt v-if="claim.data.value.denial_reason">Denial reason</dt><dd v-if="claim.data.value.denial_reason">{{ claim.data.value.denial_reason }}</dd>
+          <dt v-if="claim.data.value.denial_reason">Denial reason</dt><dd v-if="claim.data.value.denial_reason">{{ denialLabel(claim.data.value.denial_reason) }}</dd>
           <dt>Created by</dt><dd>{{ claim.data.value.created_by }} · {{ when(claim.data.value.created_at) }}</dd>
           <dt>Version</dt><dd>{{ claim.data.value.version }}</dd>
         </dl>

@@ -92,29 +92,35 @@ defended by the author.
 
 ## Stage 3: frontend
 
-**Decisions.** The dev server proxies `/api` to the API container, so the
-browser and API share an origin: the session cookie is first-party, CSRF
-is one header read from the cookie, and CORS never came up. `client.ts`
-maps every response into one of three typed errors — `ConflictError`
-(409), `ValidationError` (400, flattened to `{field: message}`), and the
-base `ApiError` — so callers catch by class, not by message-sniffing.
-Every action button and its form come straight from `available_actions`
-and its field schema; a blocked action renders disabled with
-`blocked_reason` as its hint, never hidden. `meta`, `can_edit`, and
-`can_create_claims` carry every state, denial reason, and role decision
-the UI needs, so no state or role name lives in the frontend source:
-`grep -rnE
+**Decisions.** The dev server proxies `/api` to the API container, so
+the browser and API share an origin: the session cookie is first-party,
+CSRF is one header read from the cookie, and CORS never came up.
+`client.ts` maps every response into one of three typed errors —
+`ConflictError` (409), `ValidationError` (400, flattened to `{field:
+message}`), and the base `ApiError` — so callers catch by class, not by
+message-sniffing. Every action button and its form come straight from
+`available_actions` and its field schema; a blocked action renders
+disabled with `blocked_reason` as its hint, never hidden. `meta`,
+`can_edit`, `can_create_claims`, each alert's `can_acknowledge`, and
+`registration.can_retry` carry every state, denial reason, and role
+decision the UI needs: the alert cards and the retry button read the
+detail payload instead of re-deriving an acknowledgement from history or
+a capability from a status. So no state or role name lives in the
+frontend source — `grep -rnE
 "DRAFT|SUBMITTED|UNDER_REVIEW|INFO_REQUESTED|APPROVED|DENIED|WITHDRAWN|submitter|reviewer"
-frontend/src` returns only test-fixture literals and the `App.vue` line
-that echoes `role` as plain text. The conflict banner is built from the
-409 body; the detail view polls every 3 seconds while registration is
-pending or in flight. `useAsync` sequences every call so a slow, stale
-response can't overwrite a newer one, so rapid filter changes never flash
-an old result. The router guard treats a failed session check as signed
-out rather than blanking the page. Every action failure surfaces
-visibly — inline field errors when a form is open, a panel-level message
-for fieldless actions like Submit — and a conflict freezes the whole
-panel, including an open form, until reload.
+frontend/src` returns nothing. The conflict banner is built from the 409
+body; the detail view polls every 3 seconds while registration is
+pending or in flight. Every write to the claim goes through the same
+sequence in `useAsync` that the reads use, so a slow poll cannot
+overwrite a fresh action, and rapid filter changes never flash an old
+result. An unauthenticated request answers 401 rather than 403, so a
+write whose session has expired redirects to sign-in exactly as a read
+does, while a 403 stays an inline "not allowed" message. The router
+guard treats a failed session check as signed out rather than blanking
+the page. Every action failure surfaces visibly — inline field errors
+when a form is open, a panel-level message for fieldless actions like
+Submit — and a conflict freezes the whole panel, including an open form,
+until reload.
 
 **Deferred.** Production build and static serving; pagination controls
 beyond "next page"; real-time push; an accessibility pass; the backend

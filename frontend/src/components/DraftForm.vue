@@ -1,10 +1,17 @@
 <script setup lang="ts">
 import { reactive, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { api, ValidationError } from "../api/client";
 import type { ClaimDetail } from "../api/types";
+import { isSignedOut } from "../composables/useAsync";
+import { useSession } from "../composables/useSession";
 
 const props = defineProps<{ claim?: ClaimDetail }>();
 const emit = defineEmits<{ saved: [claim: ClaimDetail] }>();
+
+const session = useSession();
+const router = useRouter();
+const route = useRoute();
 
 const form = reactive({
   payer: props.claim?.payer ?? "",
@@ -28,7 +35,10 @@ async function submit() {
     const saved = props.claim ? await api.claims.patch(props.claim.id, body) : await api.claims.create(body);
     emit("saved", saved);
   } catch (e) {
-    if (e instanceof ValidationError) errors.value = e.errors;
+    if (isSignedOut(e)) {
+      session.clear();
+      await router.push({ name: "login", query: { next: route.fullPath } });
+    } else if (e instanceof ValidationError) errors.value = e.errors;
     else failure.value = e instanceof Error ? e.message : "Could not save.";
   } finally {
     busy.value = false;

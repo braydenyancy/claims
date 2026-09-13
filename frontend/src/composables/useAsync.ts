@@ -3,6 +3,12 @@ import { useRouter } from "vue-router";
 import { ApiError } from "../api/client";
 import { useSession } from "./useSession";
 
+// The server answers 401 when the session is gone and 403 when the caller
+// is simply not allowed. Only the first means "sign in again".
+export function isSignedOut(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 401;
+}
+
 // Loading, error, and "you are no longer signed in" handled once, so
 // every view gets the same three states for free.
 export function useAsync<T>() {
@@ -23,7 +29,7 @@ export function useAsync<T>() {
       if (mine === seq) data.value = result;
       return result;
     } catch (e) {
-      if (e instanceof ApiError && e.status === 403) {
+      if (isSignedOut(e)) {
         if (mine === seq) {
           session.clear();
           await router.push({ name: "login", query: { next: router.currentRoute.value.fullPath } });
@@ -37,5 +43,13 @@ export function useAsync<T>() {
     }
   }
 
-  return { data, error, loading, run };
+  // A write that already has the fresh claim joins the same sequence, so a
+  // poll still in flight when it lands cannot overwrite it.
+  function set(value: T) {
+    seq++;
+    data.value = value;
+    error.value = "";
+  }
+
+  return { data, error, loading, run, set };
 }

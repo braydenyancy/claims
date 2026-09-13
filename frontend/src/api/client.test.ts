@@ -18,7 +18,7 @@ describe("request", () => {
   });
 
   it("maps 409 to ConflictError carrying the conflict body", async () => {
-    const body = { detail: "changed", current_state: "APPROVED", current_version: 3, last_event: null };
+    const body = { detail: "changed", current_state: "STATE_A", current_version: 3, last_event: null };
     vi.stubGlobal("fetch", respond(409, body));
     const err = await request("POST", "/api/x/", {}).catch((e) => e);
     expect(err).toBeInstanceOf(ConflictError);

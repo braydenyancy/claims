@@ -27,7 +27,7 @@ function activeAction() {
 <template>
   <section>
     <h2>Actions</h2>
-    <p v-if="errors.detail || Object.keys(errors).length" class="error" role="alert">
+    <p v-if="!activeAction() && (errors.detail || Object.keys(errors).length)" class="error" role="alert">
       {{ errors.detail || Object.values(errors).join(" ") }}
     </p>
     <p v-if="actions.length === 0" class="muted">No actions available to you right now.</p>
