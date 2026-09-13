@@ -56,10 +56,19 @@ for HIPAA violations (HHS OCR civil penalty tiers, 45 CFR 160.404).
 
 ## 6. Internal monitoring and auditing
 
-Placeholder. The audit log, access controls, and monitoring we build
-will be documented in `docs/security/` and referenced here.
+Every claim state change and every clearinghouse registration outcome
+writes an append-only `ClaimEvent` tagged `info`, `warning`, or `alert`;
+the event table in `docs/specs/2026-09-12-stage-2-clearinghouse.md` and
+workflows W4 and W5 in `docs/architecture/WORKFLOWS.md` name every
+action and its severity. The worker's log line for each attempt
+(`docker compose logs worker`) is the same audit trail as it happens,
+not only after the fact.
 
 ## 7. Responding to detected offenses and corrective action
 
-Placeholder. Incident response and corrective action procedure to be
-written in `docs/procedures/`.
+An alert (`registration_failed`, `duplicate_submission`) is answered by
+a reviewer through `POST /acknowledge/`, which requires a note and is
+itself recorded as an event (W6 in `docs/architecture/WORKFLOWS.md`) —
+nothing is ever silently cleared. A HALTED registration additionally
+requires a human to resolve the duplicate at the clearinghouse itself
+before that acknowledgement, since the API has no route that retries it.

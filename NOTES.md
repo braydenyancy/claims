@@ -36,3 +36,38 @@ a submission ID; the seed stamps one directly where a sample needs it.
 `docs/`; implementation followed a written plan with a subagent per task
 and a review after each. Every line was read and is defended by the
 author.
+
+## Stage 2: clearinghouse registration
+
+**Decisions.** The worker never calls `register` without calling
+`lookup` first: zero IDs, submit; one ID, adopt it; more than one, stop
+and raise `duplicate_submission`. One rule covers a timeout, a crashed
+worker, and a double run at once, since all three just leave a different
+count of submissions at the clearinghouse and the lookup reacts the same
+way regardless of cause. Three short transactions — `claim_next` (mark
+IN_FLIGHT), `record` (write the outcome), `reap` (reclaim an expired
+lease) — bound the writes; `process` calls the vendor with none of them
+open. Each claim gets a fresh `lease_token` on IN_FLIGHT; `record`
+applies an outcome only if the token still matches, so a worker outlived
+by its lease can't overwrite a newer attempt's result — its late write
+becomes a `registration_stale_result` warning event instead. Worker
+shutdown on SIGTERM/SIGINT is bounded by `POLL_SECONDS`, since a signal
+during the idle sleep is only noticed once it ends; fine at the 1 second
+default. An alert is answered, never cleared: acknowledging one requires
+a note, is itself an event, and `has_open_alert` drops only once every
+alert has a matching acknowledgement. HALTED means the clearinghouse
+holds more than one submission for a reference; a human resolves which
+is real there, so the API refuses to retry it — only FAILED is
+retryable. `test_clearinghouse.py` proves all four outcomes against
+`FakeGateway`: rejected, unknown-and-recorded, unknown-and-lost, and
+duplicate.
+
+**Deferred.** Celery replacing the poll loop in production; jittered
+backoff instead of `2 ** attempts`; a per-claim idempotency key at the
+vendor if it ever offers one; a TRUNCATE guard enforced by database role
+rather than convention; pagination on `/history/`.
+
+**AI use.** Same as stage 1: design was discussed with an AI assistant
+and recorded in `docs/`; implementation followed a written plan with a
+subagent per task and a review after each. Every line was read and is
+defended by the author.

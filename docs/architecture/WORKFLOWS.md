@@ -42,6 +42,7 @@ B's UI shows "A approved this at 10:42. Reload to see the current state."
 ```
 submit commits [state=SUBMITTED, event, registration=PENDING]
   → worker claims row (SKIP LOCKED, IN_FLIGHT, attempt+1)
+  → lookup(reference) (none found)
   → gateway.submit(reference, amount) → REGISTERED(id)
   → store id on claim → registration=DONE → event(info, registration_succeeded)
   → start_review now allowed
@@ -50,6 +51,7 @@ submit commits [state=SUBMITTED, event, registration=PENDING]
 ## W5. Registration, failure and reconcile (D1, D2, D11)
 
 ```
+every attempt: lookup first → 1 id: adopt · >1: HALTED · 0: register
 gateway outcome:
   REJECTED  → attempts < budget? → PENDING with backoff → event(warning)
               ✗ budget spent → FAILED → event(alert, registration_failed)
@@ -58,6 +60,7 @@ gateway outcome:
               → 1 id  → adopt → DONE → event(info, registration_reconciled)
               → >1 id → HALTED → event(alert, duplicate_submission)
 stale IN_FLIGHT (older than lease) → reaper → back to PENDING → next attempt runs lookup first
+stale lease result → discarded → event(warning, registration_stale_result)
 ```
 
 ## W6. Alert lifecycle (D11)

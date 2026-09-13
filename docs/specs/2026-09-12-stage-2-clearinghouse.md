@@ -1,6 +1,6 @@
 # Stage 2: Clearinghouse registration
 
-Status: not started. Decisions: D1, D2, D6, D7, D11. Workflows: W4, W5, W6.
+Status: complete. Decisions: D1, D2, D6, D7, D11. Workflows: W4, W5, W6.
 
 ## Goal
 
@@ -92,21 +92,21 @@ clearinghouse and acknowledges the alert with a note saying what was done.
 
 ## Cuts
 
-- [ ] **2.1 Registration model.** Migration, `has_open_alert`, enqueue on
+- [x] **2.1 Registration model.** Migration, `has_open_alert`, enqueue on
       submit inside the transaction. Test: submit rolls back the
       registration row with the state change.
-- [ ] **2.2 Gateway.** Outcome types, `Vendor`, `Fake`. Test the vendor
+- [x] **2.2 Gateway.** Outcome types, `Vendor`, `Fake`. Test the vendor
       mapping by patching the vendor module's `random` and `sleep` at
       test time; the file itself stays untouched.
-- [ ] **2.3 Worker core.** `claim_next`, `process`, `record`. Tests with
+- [x] **2.3 Worker core.** `claim_next`, `process`, `record`. Tests with
       `Fake`: every row of the table above; lookup-before-submit; the same
       registration processed twice makes one `register` call; two workers
       claim different rows.
-- [ ] **2.4 Reaper and runtime.** `reap`, `run_worker`, compose `worker`
+- [x] **2.4 Reaper and runtime.** `reap`, `run_worker`, compose `worker`
       service (same image), seed creates real registrations (one left
       PENDING so the worker registers it on boot).
-- [ ] **2.5 API.** Registration block, retry, acknowledge, alert filter.
-- [ ] **2.6 Close.** NOTES.md stage 2 paragraph, receipts showing a
+- [x] **2.5 API.** Registration block, retry, acknowledge, alert filter.
+- [x] **2.6 Close.** NOTES.md stage 2 paragraph, receipts showing a
       timeout followed by a reconcile in the worker log, spec closure,
       compliance program sections 6 and 7 pointed at the alert lifecycle.
 
