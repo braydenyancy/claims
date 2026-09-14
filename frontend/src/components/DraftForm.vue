@@ -7,7 +7,7 @@ import { isSignedOut } from "../composables/useAsync";
 import { useSession } from "../composables/useSession";
 
 const props = defineProps<{ claim?: ClaimDetail }>();
-const emit = defineEmits<{ saved: [claim: ClaimDetail] }>();
+const emit = defineEmits<{ saved: [claim: ClaimDetail]; cancel: [] }>();
 
 const session = useSession();
 const router = useRouter();
@@ -47,24 +47,39 @@ async function submit() {
 </script>
 
 <template>
-  <form class="card" @submit.prevent="submit">
-    <h2>{{ claim ? "Edit draft" : "New draft" }}</h2>
-    <label>
-      Payer
-      <input v-model="form.payer" />
-      <span v-if="errors.payer" class="field-error">{{ errors.payer }}</span>
-    </label>
-    <label>
-      Service date
-      <input v-model="form.service_date" type="date" />
-      <span v-if="errors.service_date" class="field-error">{{ errors.service_date }}</span>
-    </label>
-    <label>
-      Billed amount
-      <input v-model="form.billed_amount" inputmode="decimal" required />
-      <span v-if="errors.billed_amount" class="field-error">{{ errors.billed_amount }}</span>
-    </label>
-    <p v-if="failure" class="error" role="alert">{{ failure }}</p>
-    <button :disabled="busy">{{ claim ? "Save" : "Create draft" }}</button>
+  <form class="panel" @submit.prevent="submit">
+    <div class="panel-head">
+      <h2>{{ claim ? "Edit draft" : "New draft" }}</h2>
+      <span class="hint">Submitting later checks that every field is filled.</span>
+    </div>
+    <div class="panel-body">
+      <div class="row">
+        <label class="field">
+          <span>Payer</span>
+          <input v-model="form.payer" placeholder="Insurer or plan name" />
+          <span v-if="errors.payer" class="field-error">{{ errors.payer }}</span>
+        </label>
+        <label class="field">
+          <span>Service date</span>
+          <input v-model="form.service_date" type="date" />
+          <span v-if="errors.service_date" class="field-error">{{ errors.service_date }}</span>
+        </label>
+        <label class="field">
+          <span>Billed amount</span>
+          <input v-model="form.billed_amount" inputmode="decimal" placeholder="0.00" required />
+          <span v-if="errors.billed_amount" class="field-error">{{ errors.billed_amount }}</span>
+        </label>
+      </div>
+      <p v-if="failure" class="notice" data-tone="danger" role="alert">{{ failure }}</p>
+      <div class="actions">
+        <button class="primary" :disabled="busy">{{ claim ? "Save changes" : "Create draft" }}</button>
+        <button type="button" class="ghost" :disabled="busy" @click="emit('cancel')">Cancel</button>
+      </div>
+    </div>
   </form>
 </template>
+
+<style scoped>
+.row { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0 1rem; }
+.notice { margin-bottom: 0.75rem; }
+</style>

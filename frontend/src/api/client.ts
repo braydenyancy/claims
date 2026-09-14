@@ -7,6 +7,7 @@ import type {
   ErrorBody,
   Meta,
   Page,
+  Summary,
   User,
 } from "./types";
 
@@ -86,6 +87,7 @@ export const api = {
   claims: {
     list: (params: Record<string, string>) =>
       request<Page<ClaimSummary>>("GET", `/api/claims/?${new URLSearchParams(params)}`),
+    summary: () => request<Summary>("GET", "/api/claims/summary/"),
     get: (id: number) => request<ClaimDetail>("GET", `/api/claims/${id}/`),
     create: (body: DraftInput) => request<ClaimDetail>("POST", "/api/claims/", body),
     patch: (id: number, body: Partial<DraftInput>) => request<ClaimDetail>("PATCH", `/api/claims/${id}/`, body),

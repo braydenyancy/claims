@@ -8,6 +8,17 @@ export interface User {
 export interface Option {
   value: string;
   label: string;
+  tone?: string;
+}
+
+export interface StateCount extends Option {
+  count: number;
+}
+
+export interface Summary {
+  total: number;
+  open_alerts: number;
+  states: StateCount[];
 }
 
 export interface Meta {

@@ -12,11 +12,17 @@ async function logout() {
 </script>
 
 <template>
-  <nav v-if="session.user.value">
-    <RouterLink :to="{ name: 'claims' }">Claims</RouterLink>
+  <header v-if="session.user.value" class="topbar">
+    <RouterLink class="brand" :to="{ name: 'claims' }">
+      <span class="brand-mark" aria-hidden="true">C</span>
+      Claim Review
+    </RouterLink>
     <span class="spacer"></span>
-    <span class="muted">{{ session.user.value.username }} · {{ session.user.value.role }}</span>
-    <button @click="logout">Sign out</button>
-  </nav>
+    <span class="user-chip">
+      <strong>{{ session.user.value.username }}</strong>
+      <span class="role">{{ session.user.value.role }}</span>
+    </span>
+    <button class="ghost sm" @click="logout">Sign out</button>
+  </header>
   <RouterView />
 </template>

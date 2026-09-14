@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, ConflictError, ValidationError } from "../api/client";
-import type { ClaimDetail, ClaimEvent, ConflictBody, Meta } from "../api/types";
+import type { ClaimDetail, ClaimEvent, ConflictBody, Meta, Option } from "../api/types";
 import ActionPanel from "../components/ActionPanel.vue";
 import AlertPanel from "../components/AlertPanel.vue";
 import ConflictBanner from "../components/ConflictBanner.vue";
@@ -12,7 +12,7 @@ import RegistrationBadge from "../components/RegistrationBadge.vue";
 import StateBadge from "../components/StateBadge.vue";
 import { isSignedOut, useAsync } from "../composables/useAsync";
 import { useSession } from "../composables/useSession";
-import { money, when } from "../lib/format";
+import { money, shortDate, when } from "../lib/format";
 
 const props = defineProps<{ id: number }>();
 
@@ -32,8 +32,8 @@ const editing = ref(false);
 const retryBusy = ref(false);
 const retryError = ref("");
 
-function stateLabel(value: string) {
-  return meta.value?.states.find((s) => s.value === value)?.label;
+function stateOption(value: string): Option | undefined {
+  return meta.value?.states.find((s) => s.value === value);
 }
 
 function denialLabel(value: string) {
@@ -128,59 +128,133 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main>
-    <p><RouterLink :to="{ name: 'claims' }">← Claims</RouterLink></p>
+  <main class="page">
+    <RouterLink class="crumb" :to="{ name: 'claims' }">← All claims</RouterLink>
 
-    <p v-if="claim.loading.value && !claim.data.value" class="muted">Loading claim…</p>
-    <p v-else-if="claim.error.value && !claim.data.value" class="error" role="alert">{{ claim.error.value }} <button @click="reload">Retry</button></p>
+    <p v-if="claim.loading.value && !claim.data.value" class="empty">Loading claim…</p>
+    <div v-else-if="claim.error.value && !claim.data.value" class="panel">
+      <div class="empty" role="alert">
+        <strong>Could not load this claim.</strong>
+        {{ claim.error.value }}
+        <div class="actions center"><button @click="reload">Try again</button></div>
+      </div>
+    </div>
 
     <template v-else-if="claim.data.value">
-      <h1>
-        {{ claim.data.value.reference }}
-        <StateBadge :state="claim.data.value.state" :label="stateLabel(claim.data.value.state)" />
-      </h1>
-      <p><RegistrationBadge :registration="claim.data.value.registration" :labels="meta?.registration_statuses" /></p>
+      <div class="page-head">
+        <div>
+          <div class="detail-head">
+            <h1>{{ claim.data.value.reference }}</h1>
+            <StateBadge
+              :state="claim.data.value.state"
+              :label="stateOption(claim.data.value.state)?.label"
+              :tone="stateOption(claim.data.value.state)?.tone"
+              large
+            />
+          </div>
+          <p class="lede">
+            {{ claim.data.value.payer || "No payer yet" }}
+            · service {{ shortDate(claim.data.value.service_date) }}
+            · billed {{ money(claim.data.value.billed_amount) }}
+          </p>
+        </div>
+        <div class="actions">
+          <button v-if="claim.data.value.can_edit && !editing" @click="editing = true">Edit draft</button>
+        </div>
+      </div>
 
-      <p v-if="claim.error.value" class="hint" role="status">Could not refresh: {{ claim.error.value }}. Retrying.</p>
-
-      <p v-if="claim.data.value.registration.can_retry">
-        <button :disabled="retryBusy" @click="retry">Retry registration</button>
-        <span v-if="retryError" class="error"> {{ retryError }}</span>
+      <p v-if="claim.error.value" class="notice" data-tone="warning" role="status">
+        Could not refresh: {{ claim.error.value }}. Retrying.
       </p>
 
-      <AlertPanel :alerts="claim.data.value.alerts" :claim-id="claim.data.value.id" @updated="saved" />
+      <div class="detail-grid">
+        <div class="stack">
+          <ConflictBanner v-if="conflict" :conflict="conflict" @reload="afterConflict" />
 
-      <ConflictBanner v-if="conflict" :conflict="conflict" @reload="afterConflict" />
+          <DraftForm v-if="editing && claim.data.value.can_edit" :claim="claim.data.value" @saved="saved" @cancel="editing = false" />
 
-      <ActionPanel
-        :actions="claim.data.value.available_actions"
-        :disabled="conflict !== null"
-        :choice-labels="meta?.denial_reasons"
-        :errors="actionErrors"
-        :busy="actionBusy"
-        :active="active"
-        @run="runAction"
-        @open="(a) => { active = a; actionErrors = {}; }"
-        @close="() => { active = null; actionErrors = {}; }"
-      />
+          <AlertPanel :alerts="claim.data.value.alerts" :claim-id="claim.data.value.id" @updated="saved" />
 
-      <p v-if="claim.data.value.can_edit && !editing"><button @click="editing = true">Edit draft</button></p>
-      <DraftForm v-if="editing && claim.data.value.can_edit" :claim="claim.data.value" @saved="saved" />
+          <ActionPanel
+            :actions="claim.data.value.available_actions"
+            :disabled="conflict !== null"
+            :choice-labels="meta?.denial_reasons"
+            :errors="actionErrors"
+            :busy="actionBusy"
+            :active="active"
+            @run="runAction"
+            @open="(a) => { active = a; actionErrors = {}; }"
+            @close="() => { active = null; actionErrors = {}; }"
+          />
 
-      <section class="card">
-        <dl>
-          <dt>Payer</dt><dd>{{ claim.data.value.payer || "—" }}</dd>
-          <dt>Service date</dt><dd>{{ claim.data.value.service_date ?? "—" }}</dd>
-          <dt>Billed</dt><dd>{{ money(claim.data.value.billed_amount) }}</dd>
-          <dt>Approved</dt><dd>{{ money(claim.data.value.approved_amount) }}</dd>
-          <dt v-if="claim.data.value.denial_reason">Denial reason</dt><dd v-if="claim.data.value.denial_reason">{{ denialLabel(claim.data.value.denial_reason) }}</dd>
-          <dt>Created by</dt><dd>{{ claim.data.value.created_by }} · {{ when(claim.data.value.created_at) }}</dd>
-          <dt>Version</dt><dd>{{ claim.data.value.version }}</dd>
-        </dl>
-      </section>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>History</h2>
+              <span class="hint">{{ history.length }} {{ history.length === 1 ? "event" : "events" }}, oldest first</span>
+            </div>
+            <div class="panel-body tight">
+              <HistoryTable :events="history" />
+            </div>
+          </section>
+        </div>
 
-      <h2>History</h2>
-      <HistoryTable :events="history" />
+        <aside class="stack">
+          <section class="panel">
+            <div class="panel-head"><h2>Details</h2></div>
+            <div class="panel-body">
+              <dl class="kv">
+                <dt>Payer</dt><dd>{{ claim.data.value.payer || "—" }}</dd>
+                <dt>Service date</dt><dd>{{ shortDate(claim.data.value.service_date) }}</dd>
+                <dt>Billed</dt><dd class="num">{{ money(claim.data.value.billed_amount) }}</dd>
+                <dt>Approved</dt><dd class="num">{{ money(claim.data.value.approved_amount) }}</dd>
+                <template v-if="claim.data.value.denial_reason">
+                  <dt>Denial reason</dt><dd>{{ denialLabel(claim.data.value.denial_reason) }}</dd>
+                </template>
+                <dt>Created by</dt><dd>{{ claim.data.value.created_by }}</dd>
+                <dt>Created</dt><dd>{{ when(claim.data.value.created_at) }}</dd>
+                <dt>Updated</dt><dd>{{ when(claim.data.value.updated_at) }}</dd>
+                <dt>Version</dt><dd class="num">{{ claim.data.value.version }}</dd>
+              </dl>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Clearinghouse</h2>
+              <RegistrationBadge :registration="claim.data.value.registration" :labels="meta?.registration_statuses" />
+            </div>
+            <div class="panel-body">
+              <dl class="kv">
+                <template v-if="claim.data.value.registration.submission_id">
+                  <dt>Submission</dt><dd class="num">{{ claim.data.value.registration.submission_id }}</dd>
+                </template>
+                <template v-if="claim.data.value.registration.attempts">
+                  <dt>Attempts</dt><dd class="num">{{ claim.data.value.registration.attempts }}</dd>
+                </template>
+                <template v-if="claim.data.value.registration.next_attempt_at">
+                  <dt>Next try</dt><dd>{{ when(claim.data.value.registration.next_attempt_at) }}</dd>
+                </template>
+                <template v-if="claim.data.value.registration.last_error">
+                  <dt>Last error</dt><dd class="error">{{ claim.data.value.registration.last_error }}</dd>
+                </template>
+              </dl>
+              <p v-if="!claim.data.value.registration.submission_id && !claim.data.value.registration.attempts && !claim.data.value.registration.last_error" class="hint">
+                Registered with the clearinghouse once the claim is submitted.
+              </p>
+              <div v-if="claim.data.value.registration.can_retry" class="actions retry">
+                <button :disabled="retryBusy" @click="retry">Retry registration</button>
+                <span v-if="retryError" class="error small">{{ retryError }}</span>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </div>
     </template>
   </main>
 </template>
+
+<style scoped>
+.center { justify-content: center; margin-top: 0.75rem; }
+.retry { margin-top: 0.9rem; }
+.notice { margin-bottom: 1rem; }
+</style>

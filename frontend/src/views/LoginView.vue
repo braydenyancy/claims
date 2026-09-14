@@ -35,14 +35,34 @@ async function submit() {
 </script>
 
 <template>
-  <main class="narrow">
-    <h1>Sign in</h1>
-    <form @submit.prevent="submit">
-      <label>Username <input v-model="username" autocomplete="username" required /></label>
-      <label>Password <input v-model="password" type="password" autocomplete="current-password" required /></label>
-      <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <button :disabled="busy">Sign in</button>
+  <main class="page narrow">
+    <div class="brand auth-brand">
+      <span class="brand-mark" aria-hidden="true">C</span>
+      Claim Review
+    </div>
+    <form class="panel" @submit.prevent="submit">
+      <div class="panel-body">
+        <h1 class="title">Sign in</h1>
+        <label class="field">
+          <span>Username</span>
+          <input v-model="username" autocomplete="username" required />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input v-model="password" type="password" autocomplete="current-password" required />
+        </label>
+        <p v-if="error" class="notice" data-tone="danger" role="alert">{{ error }}</p>
+        <button class="primary wide" :disabled="busy">Sign in</button>
+      </div>
     </form>
-    <p class="hint">Seeded users: sam, rita, rob. Password: password.</p>
+    <p class="hint seeded">Seeded users: sam, rita, rob. Password: password.</p>
   </main>
 </template>
+
+<style scoped>
+.auth-brand { justify-content: center; margin-bottom: 1.25rem; font-size: 1.1rem; }
+.title { margin-bottom: 1rem; }
+.wide { width: 100%; margin-top: 0.25rem; }
+.notice { margin-bottom: 0.75rem; }
+.seeded { text-align: center; margin-top: 1rem; }
+</style>

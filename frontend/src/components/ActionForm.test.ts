@@ -25,7 +25,7 @@ describe("ActionForm", () => {
     });
     const options = w.findAll("option").map((o) => [o.attributes("value"), o.text()]);
     expect(options).toEqual([
-      ["", "choose…"],
+      ["", "Choose…"],
       ["duplicate", "Duplicate claim"],
       ["not_covered", "not covered"],
     ]);

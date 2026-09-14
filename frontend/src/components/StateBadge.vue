@@ -2,10 +2,10 @@
 import { humanize } from "../lib/format";
 
 // Renders whatever state string the API gives. It knows no state names;
-// the label comes from /api/meta/ when the caller has it.
-defineProps<{ state: string; label?: string }>();
+// label and tone come from /api/meta/ when the caller has them.
+defineProps<{ state: string; label?: string; tone?: string; large?: boolean }>();
 </script>
 
 <template>
-  <span class="badge" :data-state="state">{{ label ?? humanize(state) }}</span>
+  <span class="badge" :class="{ lg: large }" :data-tone="tone ?? 'neutral'" :data-state="state">{{ label ?? humanize(state) }}</span>
 </template>

@@ -1,5 +1,6 @@
 from django.contrib.auth import authenticate, login, logout
 from django.db import connection
+from django.db.models import Count
 from django.middleware.csrf import get_token
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
@@ -61,19 +62,44 @@ class MeView(APIView):
         return Response(UserSerializer(request.user).data)
 
 
+# How the UI should colour a value. Presentation, decided here so the
+# frontend never has to know a state name (D4). The vocabulary is closed:
+# neutral, info, success, warning, danger.
+STATE_TONES = {
+    State.DRAFT: "neutral",
+    State.SUBMITTED: "info",
+    State.UNDER_REVIEW: "info",
+    State.INFO_REQUESTED: "warning",
+    State.APPROVED: "success",
+    State.DENIED: "danger",
+    State.WITHDRAWN: "neutral",
+}
+REGISTRATION_TONES = {
+    RegistrationStatus.PENDING: "neutral",
+    RegistrationStatus.IN_FLIGHT: "info",
+    RegistrationStatus.DONE: "success",
+    RegistrationStatus.FAILED: "danger",
+    RegistrationStatus.HALTED: "danger",
+}
+
+
+def _options(choices, tones, lower=False):
+    return [
+        {"value": v.lower() if lower else v, "label": label, "tone": tones.get(v, "neutral")}
+        for v, label in choices
+    ]
+
+
 class MetaView(APIView):
     """The closed lists the UI needs for filters and labels. The UI
     renders these; it never decides anything from them (D4)."""
 
     def get(self, request):
-        def options(choices, lower=False):
-            return [{"value": v.lower() if lower else v, "label": label} for v, label in choices]
-
         return Response(
             {
-                "states": options(State.choices),
-                "denial_reasons": options(DenialReason.choices),
-                "registration_statuses": options(RegistrationStatus.choices, lower=True),
+                "states": _options(State.choices, STATE_TONES),
+                "denial_reasons": _options(DenialReason.choices, {}),
+                "registration_statuses": _options(RegistrationStatus.choices, REGISTRATION_TONES, lower=True),
             }
         )
 
@@ -136,6 +162,21 @@ class ClaimViewSet(
         except services.NotAllowed as exc:
             return Response({"detail": str(exc), "errors": {}}, status=exc.status_code)
         return self._detail(claim)
+
+    @action(detail=False, methods=["get"])
+    def summary(self, request):
+        """Counts per state over the claims this user may see, ignoring
+        the list filters, so the dashboard strip stays whole while the
+        table is narrowed."""
+        qs = self.get_queryset()
+        counts = {row["state"]: row["count"] for row in qs.values("state").annotate(count=Count("id"))}
+        return Response(
+            {
+                "total": sum(counts.values()),
+                "open_alerts": qs.filter(has_open_alert=True).count(),
+                "states": [dict(option, count=counts.get(option["value"], 0)) for option in _options(State.choices, STATE_TONES)],
+            }
+        )
 
     @action(detail=True, methods=["get"])
     def history(self, request, pk=None):

@@ -418,6 +418,31 @@ def test_meta_lists_closed_lists(api, submitter):
         "not_covered", "duplicate", "insufficient_documentation", "out_of_network", "timely_filing",
     ]
     assert [r["value"] for r in body["registration_statuses"]] == ["pending", "in_flight", "done", "failed", "halted"]
+    tones = {"neutral", "info", "success", "warning", "danger"}
+    for group in ("states", "denial_reasons", "registration_statuses"):
+        assert all(o["tone"] in tones for o in body[group]), group
+
+
+@pytest.mark.django_db
+def test_summary_counts_the_caller_scope_and_ignores_list_filters(api, submitter, reviewer):
+    other = User.objects.create_user("other", password="password", role=Role.SUBMITTER)
+    services.create_draft(created_by=other, billed_amount=Decimal("5.00"))
+    services.create_draft(created_by=submitter, billed_amount=Decimal("1.00"))
+    submitted = services.create_draft(
+        created_by=submitter, payer="Acme", service_date=date(2026, 9, 1), billed_amount=Decimal("2.00")
+    )
+    services.transition(claim_id=submitted.pk, action="submit", actor=submitter, expected_version=0)
+
+    login(api, "sam")
+    body = api.get("/api/claims/summary/?state=DRAFT").json()
+    assert body["total"] == 2 and body["open_alerts"] == 0
+    assert [s["value"] for s in body["states"]] == list(State.values)
+    counts = {s["value"]: s["count"] for s in body["states"]}
+    assert counts["DRAFT"] == 1 and counts["SUBMITTED"] == 1 and counts["APPROVED"] == 0
+    assert all({"label", "tone"} <= set(s) for s in body["states"])
+
+    login(api, "rita")
+    assert api.get("/api/claims/summary/").json()["total"] == 3
 
 
 @pytest.mark.django_db
