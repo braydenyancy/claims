@@ -1,6 +1,6 @@
 # Claims
 
-Django REST Framework, PostgreSQL, and Vue 3 claim review demo. See [NOTES.md](NOTES.md) for assumptions, design choices, and limitations.
+Django REST Framework, PostgreSQL, and Vue 3 claim review demo. See [NOTES.md](NOTES.md) for assumptions, design choices, and limitations, and `docs/` for the architecture, decisions, and compliance notes.
 
 ## Run
 
