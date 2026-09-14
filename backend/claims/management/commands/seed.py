@@ -29,7 +29,10 @@ class Command(BaseCommand):
                 user.set_password("password")
                 user.save()
             users[username] = user
-        self.stdout.write(f"users: {', '.join(users)}")
+        # The admin site is read-only; this login only inspects.
+        if not User.objects.filter(username="admin").exists():
+            User.objects.create_superuser("admin", password="password", role=Role.REVIEWER)
+        self.stdout.write(f"users: {', '.join(users)}, admin")
 
         with transaction.atomic():
             if Claim.objects.exists():

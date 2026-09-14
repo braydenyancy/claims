@@ -11,7 +11,7 @@ from claims.models import Claim, ClaimEvent, Registration, State, User
 def test_seed_creates_users_and_claims_once():
     call_command("seed")
     call_command("seed")
-    assert sorted(User.objects.values_list("username", flat=True)) == ["rita", "rob", "sam"]
+    assert sorted(User.objects.values_list("username", flat=True)) == ["admin", "rita", "rob", "sam"]
     assert set(Claim.objects.values_list("state", flat=True)) == set(State.values)
     assert Claim.objects.count() == 10
     assert ClaimEvent.objects.filter(action="create").count() == 10
