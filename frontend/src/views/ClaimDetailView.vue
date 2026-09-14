@@ -31,6 +31,8 @@ const actionBusy = ref(false);
 const editing = ref(false);
 const retryBusy = ref(false);
 const retryError = ref("");
+const reconcileBusy = ref(false);
+const reconcileError = ref("");
 
 function stateOption(value: string): Option | undefined {
   return meta.value?.states.find((s) => s.value === value);
@@ -49,6 +51,7 @@ async function signInAgain() {
 
 async function reload() {
   retryError.value = "";
+  reconcileError.value = "";
   // A failed history refresh keeps the history already on screen.
   const [c, h] = await Promise.all([
     claim.run(() => api.claims.get(props.id)),
@@ -82,6 +85,7 @@ async function afterConflict() {
   active.value = null;
   actionErrors.value = {};
   retryError.value = "";
+  reconcileError.value = "";
   await reload();
 }
 
@@ -106,6 +110,22 @@ async function retry() {
     else retryError.value = e instanceof Error ? e.message : "Could not retry.";
   } finally {
     retryBusy.value = false;
+  }
+}
+
+async function reconcile() {
+  const current = claim.data.value;
+  if (!current) return;
+  reconcileBusy.value = true;
+  reconcileError.value = "";
+  try {
+    claim.set(await api.claims.reconcile(current.id));
+    history.value = await api.claims.history(current.id).catch(() => history.value);
+  } catch (e) {
+    if (isSignedOut(e)) await signInAgain();
+    else reconcileError.value = e instanceof Error ? e.message : "Could not check clearinghouse status.";
+  } finally {
+    reconcileBusy.value = false;
   }
 }
 
@@ -241,6 +261,14 @@ onMounted(async () => {
               <p v-if="!claim.data.value.registration.submission_id && !claim.data.value.registration.attempts && !claim.data.value.registration.last_error" class="hint">
                 Registered with the clearinghouse once the claim is submitted.
               </p>
+              <div v-if="claim.data.value.registration.status === 'uncertain'" class="notice retry" data-tone="warning" role="status">
+                <strong>Status uncertain.</strong>
+                The clearinghouse may have received this claim. A reviewer can check its status; no further submission is sent while the outcome is uncertain.
+                <div v-if="claim.data.value.registration.can_reconcile" class="actions">
+                  <button :disabled="reconcileBusy" @click="reconcile">{{ reconcileBusy ? "Checking…" : "Check clearinghouse status" }}</button>
+                  <span v-if="reconcileError" class="error small" role="alert">{{ reconcileError }}</span>
+                </div>
+              </div>
               <div v-if="claim.data.value.registration.can_retry" class="actions retry">
                 <button :disabled="retryBusy" @click="retry">Retry registration</button>
                 <span v-if="retryError" class="error small">{{ retryError }}</span>

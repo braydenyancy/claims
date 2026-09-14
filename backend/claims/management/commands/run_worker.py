@@ -43,8 +43,8 @@ class Command(BaseCommand):
                 worked = worker.run_once(gateway)
             except Exception:
                 # One poisoned row must not take the process down with it. The
-                # lease expires, the reaper returns the row to PENDING, and the
-                # next attempt looks up first as always.
+                # An expired lease becomes UNCERTAIN. It can be reconciled
+                # by lookup, but must not be submitted again automatically.
                 log.exception("worker iteration failed")
                 worked = False
             if not worked:

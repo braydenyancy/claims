@@ -1,4 +1,4 @@
-"""Append-only audit table, enforced below the application (D6).
+"""Append-only audit table, enforced below the application.
 A trigger rather than REVOKE so it holds with a single database role."""
 
 from django.db import migrations

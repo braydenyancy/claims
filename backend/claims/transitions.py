@@ -1,4 +1,4 @@
-"""The claim lifecycle as data (D4).
+"""The claim lifecycle as data.
 
 This module has no Django imports and is the single source of truth for
 which action moves a claim from where to where, who may do it, what input
@@ -76,7 +76,7 @@ class Transition:
 
 def _submit_rules(claim: ClaimView, data: dict, today: date) -> Errors:
     errors: Errors = {}
-    if not claim.payer:
+    if not str(claim.payer or "").strip():
         errors["payer"] = "Payer is required."
     if claim.service_date is None:
         errors["service_date"] = "Service date is required."

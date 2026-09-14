@@ -1,4 +1,4 @@
-"""The one door to the clearinghouse (D1).
+"""The one door to the clearinghouse.
 
 VendorGateway is the only code that imports the vendor module. It turns
 the vendor's two exceptions into explicit outcomes so callers must handle
@@ -52,11 +52,9 @@ class VendorGateway:
     """Imports the vendor module lazily so the rest of the app never needs
     it on the path.
 
-    The vendor call carries no timeout of its own, so it gets one here: the
-    call runs on a single worker thread and is abandoned if it outruns
-    CALL_TIMEOUT_SECONDS. That keeps every call comfortably inside the
-    worker's lease, which is what stops a second worker starting while the
-    first one is still talking to the clearinghouse.
+    The vendor call carries no timeout of its own, so the worker stops
+    waiting after CALL_TIMEOUT_SECONDS. The underlying thread can continue;
+    an unresolved result is marked UNCERTAIN and cannot be resubmitted.
     """
 
     def register(self, reference: str, amount: str) -> Outcome:

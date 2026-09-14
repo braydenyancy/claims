@@ -1,4 +1,4 @@
-"""Drains the registration outbox (D2, W4, W5).
+"""Drains the registration outbox.
 
 Four steps, each with its own transaction boundary:
 
@@ -7,10 +7,10 @@ Four steps, each with its own transaction boundary:
   process     no transaction: look up first, always; adopt a single
               existing ID, halt on several, otherwise register.
   record      one short transaction: write the outcome to the
-              registration, the claim, and the event log, but only if
-              the lease token still matches.
-  reap        one short transaction per stale row: return IN_FLIGHT rows
-              whose lease expired to PENDING, locking the claim first.
+              registration, the claim, and the event log. A definite late
+              success can still resolve an UNCERTAIN row.
+  reap        one short transaction per stale row: mark expired work
+              UNCERTAIN, locking the claim first. It must not resubmit.
 
 The vendor is never called while a database transaction is open.
 
@@ -106,10 +106,30 @@ def record(reg: Registration, outcome: Outcome | None, *, reconciled: bool = Fal
         current = Registration.objects.select_for_update().get(pk=reg.pk)
 
         if current.lease_token != reg.lease_token or current.status != RegistrationStatus.IN_FLIGHT:
-            log.warning("stale result discarded claim=%s outcome=%r", claim.reference, outcome)
             attempt = reg.attempts
-            event = _event(claim, "registration_stale_result", Severity.WARNING,
-                           {"outcome": repr(outcome), "attempt": attempt})
+            if current.status == RegistrationStatus.UNCERTAIN and duplicate_ids is not None:
+                current.status = RegistrationStatus.HALTED
+                current.last_error = f"{len(duplicate_ids)} submissions found for one reference"
+                claim.has_open_alert = True
+                current.save()
+                claim.save()
+                event = _event(claim, "duplicate_submission", Severity.ALERT,
+                               {"submission_ids": duplicate_ids, "attempt": attempt})
+            elif current.status == RegistrationStatus.UNCERTAIN and isinstance(outcome, Registered):
+                # A reaper may have marked the row uncertain while this
+                # worker was still waiting. Its definite result is safe to
+                # adopt, because UNCERTAIN is never submitted again.
+                current.status = RegistrationStatus.DONE
+                current.last_error = ""
+                claim.submission_id = outcome.submission_id
+                current.save()
+                claim.save()
+                event = _event(claim, "registration_reconciled", Severity.INFO,
+                               {"submission_id": outcome.submission_id, "attempt": attempt})
+            else:
+                log.warning("stale result discarded claim=%s outcome=%r", claim.reference, outcome)
+                event = _event(claim, "registration_stale_result", Severity.WARNING,
+                               {"outcome": repr(outcome), "attempt": attempt})
         else:
             attempt = current.attempts
             if duplicate_ids is not None:
@@ -124,6 +144,15 @@ def record(reg: Registration, outcome: Outcome | None, *, reconciled: bool = Fal
                 claim.submission_id = outcome.submission_id
                 event = _event(claim, "registration_reconciled" if reconciled else "registration_succeeded",
                                Severity.INFO, {"submission_id": outcome.submission_id, "attempt": attempt})
+            elif isinstance(outcome, Unknown):
+                # The first lookup after an unknown outcome may race with a
+                # still-running vendor call. A zero result is not permission
+                # to submit again.
+                current.status = RegistrationStatus.UNCERTAIN
+                current.last_error = outcome.reason[:500]
+                claim.has_open_alert = True
+                event = _event(claim, "registration_uncertain", Severity.ALERT,
+                               {"reason": outcome.reason, "attempt": attempt})
             else:
                 current.last_error = outcome.reason[:500]
                 if attempt >= _cfg("MAX_ATTEMPTS"):
@@ -147,10 +176,9 @@ def record(reg: Registration, outcome: Outcome | None, *, reconciled: bool = Fal
 
 
 def reap() -> int:
-    """Return IN_FLIGHT rows whose lease expired to PENDING. Their next
-    attempt looks up first, so anything the dead worker actually sent is
-    adopted rather than sent again. Lock order: Claim before Registration,
-    the same as record()."""
+    """Mark expired IN_FLIGHT work uncertain. A worker may still be in a
+    vendor call, so even a lookup returning zero cannot authorize a new
+    submission. Lock order: Claim before Registration, as in record()."""
     cutoff = timezone.now() - timedelta(seconds=_cfg("LEASE_SECONDS"))
     candidates = list(
         Registration.objects.filter(status=RegistrationStatus.IN_FLIGHT, in_flight_since__lt=cutoff)
@@ -166,15 +194,18 @@ def reap() -> int:
             if reg.status != RegistrationStatus.IN_FLIGHT or reg.in_flight_since is None or reg.in_flight_since >= cutoff:
                 continue  # already recovered or recorded meanwhile
             attempt = reg.attempts
-            reg.status = RegistrationStatus.PENDING
+            reg.status = RegistrationStatus.UNCERTAIN
             reg.in_flight_since = None
             reg.lease_token = ""
-            reg.next_attempt_at = timezone.now()
+            reg.last_error = "Worker lease expired before the registration outcome was recorded."
             reg.save()
-            _event(claim, "registration_recovered", Severity.WARNING, {"attempt": attempt})
+            claim.has_open_alert = True
+            claim.save(update_fields=["has_open_alert", "updated_at"])
+            _event(claim, "registration_uncertain", Severity.ALERT,
+                   {"reason": reg.last_error, "attempt": attempt})
             recovered += 1
     if recovered:
-        log.warning("reaped %d expired leases", recovered)
+        log.warning("marked %d expired registrations uncertain", recovered)
     return recovered
 
 

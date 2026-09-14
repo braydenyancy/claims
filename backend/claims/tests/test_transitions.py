@@ -116,6 +116,7 @@ def test_final_states_offer_no_actions(submitter):
     "overrides, field",
     [
         ({"payer": ""}, "payer"),
+        ({"payer": "   "}, "payer"),
         ({"service_date": None}, "service_date"),
         ({"service_date": date.today() + timedelta(days=2)}, "service_date"),
         ({"billed_amount": Decimal("0.00")}, "billed_amount"),
@@ -181,14 +182,17 @@ def test_approve_stores_amount(submitter, reviewer):
 
 
 @pytest.mark.django_db
-def test_extra_data_keys_are_not_stored(submitter, reviewer):
+def test_extra_data_keys_are_rejected_without_audit_gap(submitter, reviewer):
     claim = make_claim(submitter, State.UNDER_REVIEW)
-    services.transition(
-        claim_id=claim.pk, action="approve", actor=reviewer, expected_version=0,
-        data={"approved_amount": Decimal("50.00"), "extra": "not declared"},
-    )
-    event = ClaimEvent.objects.get(claim=claim, action="approve")
-    assert event.data == {"approved_amount": "50.00"}
+    with pytest.raises(services.RuleViolation) as exc:
+        services.transition(
+            claim_id=claim.pk, action="approve", actor=reviewer, expected_version=0,
+            data={"approved_amount": Decimal("50.00"), "extra": "not declared"},
+        )
+    assert "extra" in exc.value.errors
+    claim.refresh_from_db()
+    assert claim.state == State.UNDER_REVIEW
+    assert not ClaimEvent.objects.filter(claim=claim, action="approve").exists()
 
 
 @pytest.mark.django_db

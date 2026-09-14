@@ -1,9 +1,8 @@
-"""The only writers of claim state. Every state change happens here,
-inside one transaction, behind a row lock and a version check, and
-writes its ClaimEvent before committing (D5, D6)."""
+"""Claim writes and their audit events share a transaction."""
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Any
 
@@ -11,7 +10,10 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import transitions
+from .clearinghouse.gateway import Gateway
 from .models import Claim, ClaimEvent, Registration, RegistrationStatus, Role, Severity, State, User
+
+log = logging.getLogger("claims.services")
 
 
 class TransitionError(Exception):
@@ -19,7 +21,7 @@ class TransitionError(Exception):
 
 
 class ConflictError(TransitionError):
-    """The claim changed since the caller last saw it (D5)."""
+    """The claim changed since the caller last saw it."""
 
     def __init__(self, claim: Claim):
         self.claim = claim
@@ -42,6 +44,10 @@ class RuleViolation(TransitionError):
         super().__init__("Transition rules not satisfied.")
 
 
+class ClearinghouseUnavailable(Exception):
+    """A read-only registration check could not reach the clearinghouse."""
+
+
 def _jsonable(data: dict[str, Any]) -> dict[str, Any]:
     return {k: (str(v) if isinstance(v, Decimal) else v) for k, v in data.items()}
 
@@ -52,7 +58,7 @@ def _check_owner(claim: Claim, actor: User) -> None:
 
 
 def _enqueue_registration(claim: Claim) -> None:
-    """Outbox row for the worker (D2). Same transaction as the state change:
+    """Outbox row for the worker. Same transaction as the state change:
     if either write fails, neither happened."""
     Registration.objects.create(claim=claim)
 
@@ -121,7 +127,9 @@ def transition(*, claim_id: int, action: str, actor: User, expected_version: int
         if claim.state not in t.from_states:
             raise NotAllowed(f"Cannot {action} a claim in state {claim.state}.", 400)
 
-        data = {k: v for k, v in data.items() if k in {f.name for f in t.fields}}
+        unknown = set(data) - {f.name for f in t.fields}
+        if unknown:
+            raise RuleViolation({name: "This action does not accept this field." for name in sorted(unknown)})
         errors = t.validate(claim, data, timezone.localdate())
         if errors:
             raise RuleViolation(errors)
@@ -167,8 +175,58 @@ def retry_registration(*, claim: Claim, actor: User) -> Claim:
     return claim
 
 
+def reconcile_registration(*, claim: Claim, actor: User, gateway: Gateway) -> Claim:
+    """Check an uncertain registration without ever submitting again.
+
+    A zero-result lookup leaves it uncertain: an earlier vendor call may
+    still be running. Only a definite rejection is eligible for retry.
+    """
+    if actor.role != Role.REVIEWER:
+        raise NotAllowed("Only a reviewer can reconcile a registration.", 403)
+    with transaction.atomic():
+        claim = Claim.objects.select_for_update().get(pk=claim.pk)
+        try:
+            reg = Registration.objects.select_for_update().get(claim=claim)
+        except Registration.DoesNotExist:
+            raise NotAllowed("This claim has no registration to reconcile.", 400)
+        if reg.status != RegistrationStatus.UNCERTAIN:
+            raise NotAllowed(f"Registration is {reg.status}, not UNCERTAIN.", 400)
+        reference = claim.reference
+
+    try:
+        ids = gateway.lookup(reference)
+    except Exception as exc:
+        log.exception("registration lookup failed claim=%s", reference)
+        raise ClearinghouseUnavailable("Could not check the clearinghouse. Try again later.") from exc
+
+    with transaction.atomic():
+        claim = Claim.objects.select_for_update().get(pk=claim.pk)
+        reg = Registration.objects.select_for_update().get(claim=claim)
+        if reg.status != RegistrationStatus.UNCERTAIN:
+            return claim  # another check or the original worker resolved it
+        if len(ids) > 1:
+            reg.status = RegistrationStatus.HALTED
+            reg.last_error = f"{len(ids)} submissions found for one reference"
+            claim.has_open_alert = True
+            action, severity, data = "duplicate_submission", Severity.ALERT, {"submission_ids": ids}
+        elif len(ids) == 1:
+            reg.status = RegistrationStatus.DONE
+            reg.last_error = ""
+            claim.submission_id = ids[0]
+            action, severity, data = "registration_reconciled", Severity.INFO, {"submission_id": ids[0]}
+        else:
+            action, severity, data = "registration_checked", Severity.INFO, {"submission_ids_found": 0}
+        reg.save()
+        claim.save()
+        ClaimEvent.objects.create(
+            claim=claim, actor=actor, action=action, severity=severity,
+            from_state=claim.state, to_state=claim.state, data=data,
+        )
+    return claim
+
+
 def acknowledge_alert(*, claim: Claim, actor: User, event_id: int, note: str) -> Claim:
-    """Answer an alert on the record (D11, W6). Nothing is cleared; the
+    """Answer an alert on the record. Nothing is cleared; the
     acknowledgement is itself an event, and the claim's flag drops only
     when every alert has one."""
     if actor.role != Role.REVIEWER:

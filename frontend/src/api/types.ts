@@ -47,6 +47,7 @@ export interface Registration {
   submission_id?: string;
   next_attempt_at?: string | null;
   can_retry?: boolean;
+  can_reconcile?: boolean;
 }
 
 export interface Acknowledgement {

@@ -95,6 +95,7 @@ export const api = {
     transition: (id: number, action: string, version: number, data: Record<string, unknown>) =>
       request<ClaimDetail>("POST", `/api/claims/${id}/transition/`, { action, version, data }),
     retry: (id: number) => request<ClaimDetail>("POST", `/api/claims/${id}/registration/retry/`),
+    reconcile: (id: number) => request<ClaimDetail>("POST", `/api/claims/${id}/registration/reconcile/`),
     acknowledge: (id: number, event_id: number, note: string) =>
       request<ClaimDetail>("POST", `/api/claims/${id}/acknowledge/`, { event_id, note }),
   },

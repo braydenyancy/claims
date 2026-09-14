@@ -45,7 +45,8 @@ class Severity(models.TextChoices):
 
 def generate_reference() -> str:
     """Server-generated, unique, not guessable from a count. This is the
-    idempotency key the clearinghouse recognises (D7).
+    lookup key used to reconcile an uncertain clearinghouse submission.
+    The vendor does not enforce idempotency for this key.
 
     64 bits, not 32: by the birthday bound a 32-bit token collides with
     even odds after ~65k claims, which a single payer reaches. 16 hex
@@ -95,7 +96,7 @@ class ImmutableEventError(Exception):
 
 class ClaimEvent(models.Model):
     """One row per thing that happened to a claim: a user transition or a
-    system outcome. Append-only at the model and at the database (D6)."""
+    system outcome. Append-only at the model and at the database."""
 
     claim = models.ForeignKey(Claim, on_delete=models.PROTECT, related_name="events")
     actor = models.ForeignKey(
@@ -127,13 +128,14 @@ class ClaimEvent(models.Model):
 class RegistrationStatus(models.TextChoices):
     PENDING = "PENDING", "Pending"
     IN_FLIGHT = "IN_FLIGHT", "In flight"
+    UNCERTAIN = "UNCERTAIN", "Needs reconciliation"
     DONE = "DONE", "Done"
     FAILED = "FAILED", "Failed"
     HALTED = "HALTED", "Halted"
 
 
 class Registration(models.Model):
-    """The outbox row for one claim's clearinghouse registration (D2).
+    """The outbox row for one claim's clearinghouse registration.
     Created with the submit transition, in the same transaction. The
     worker owns every later change. One per claim, ever."""
 

@@ -86,8 +86,8 @@ CLEARINGHOUSE = {
     "MAX_ATTEMPTS": int(os.environ.get("CLEARINGHOUSE_MAX_ATTEMPTS", "5")),
     "LEASE_SECONDS": int(os.environ.get("CLEARINGHOUSE_LEASE_SECONDS", "60")),
     "POLL_SECONDS": float(os.environ.get("CLEARINGHOUSE_POLL_SECONDS", "1.0")),
-    # Must stay well under LEASE_SECONDS: a call that outlives its lease lets a
-    # second worker start before the first one's record lands.
+    # A local wait limit, not a cancellation of the vendor call. An expired
+    # lease becomes UNCERTAIN and is never automatically resubmitted.
     "CALL_TIMEOUT_SECONDS": float(os.environ.get("CLEARINGHOUSE_CALL_TIMEOUT_SECONDS", "20")),
 }
 

@@ -75,7 +75,7 @@ class ClaimDetailSerializer(ClaimListSerializer):
         try:
             reg = claim.registration
         except Registration.DoesNotExist:
-            return {"status": "not_submitted", "can_retry": False}
+            return {"status": "not_submitted", "can_retry": False, "can_reconcile": False}
         return {
             "status": reg.status.lower(),
             "attempts": reg.attempts,
@@ -83,6 +83,7 @@ class ClaimDetailSerializer(ClaimListSerializer):
             "submission_id": claim.submission_id,
             "next_attempt_at": reg.next_attempt_at.isoformat() if reg.status == "PENDING" else None,
             "can_retry": reg.status == RegistrationStatus.FAILED and user.role == Role.REVIEWER,
+            "can_reconcile": reg.status == RegistrationStatus.UNCERTAIN and user.role == Role.REVIEWER,
         }
 
     def get_alerts(self, claim):

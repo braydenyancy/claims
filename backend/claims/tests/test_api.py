@@ -94,7 +94,7 @@ def test_detail_available_actions_come_from_the_server(api, submitter, reviewer)
     body = api.get(f"/api/claims/{claim.id}/").json()
     assert [a["action"] for a in body["available_actions"]] == ["submit", "withdraw"]
     assert body["available_actions"][0]["blocked_reason"]  # incomplete draft: rule fails
-    assert body["registration"] == {"status": "not_submitted", "can_retry": False}
+    assert body["registration"] == {"status": "not_submitted", "can_retry": False, "can_reconcile": False}
 
     api.post("/api/auth/logout/")
     login(api, "rita")
@@ -114,7 +114,7 @@ def test_detail_lists_deny_choices(api, submitter, reviewer):
     assert deny["fields"] == [{"name": "denial_reason", "type": "choice", "choices": [
         "not_covered", "duplicate", "insufficient_documentation", "out_of_network", "timely_filing",
     ]}]
-    assert body["registration"] == {"status": "not_submitted", "can_retry": False}
+    assert body["registration"] == {"status": "not_submitted", "can_retry": False, "can_reconcile": False}
 
 
 @pytest.mark.django_db
@@ -189,6 +189,9 @@ def test_transition_endpoint_error_shapes(api, submitter, reviewer):
 
     unknown = api.post(url, {"action": "explode", "version": 0}, format="json")
     assert unknown.status_code == 400
+
+    extra = api.post(url, {"action": "withdraw", "version": 0, "data": {"surprise": "ignored before"}}, format="json")
+    assert extra.status_code == 400 and "surprise" in extra.json()["errors"]
 
     ok = api.post(url, {"action": "withdraw", "version": 0}, format="json")
     assert ok.status_code == 200 and ok.json()["state"] == "WITHDRAWN"
@@ -290,7 +293,7 @@ def test_registration_block_and_alert_flag(api, submitter, reviewer):
     body = api.get(f"/api/claims/{claim.id}/").json()
     assert body["registration"] == {
         "status": "failed", "attempts": 5, "last_error": "down",
-        "submission_id": "", "next_attempt_at": None, "can_retry": True,
+        "submission_id": "", "next_attempt_at": None, "can_retry": True, "can_reconcile": False,
     }
     assert body["has_open_alert"] is True
     listed = api.get("/api/claims/?alert=open").json()
@@ -325,6 +328,56 @@ def test_retry_refused_when_halted(api, submitter, reviewer):
     response = api.post(f"/api/claims/{claim.id}/registration/retry/")
     assert response.status_code == 400
     assert "HALTED" in response.json()["detail"]
+
+
+@pytest.mark.django_db
+def test_uncertain_registration_can_only_be_checked_not_retried(api, submitter, reviewer, monkeypatch):
+    claim = Claim.objects.create(
+        payer="Acme", service_date=date(2026, 9, 1), billed_amount=Decimal("100.00"),
+        state=State.SUBMITTED, created_by=submitter, has_open_alert=True,
+    )
+    Registration.objects.create(claim=claim, status=RegistrationStatus.UNCERTAIN, last_error="Outcome unknown")
+    from claims.clearinghouse.gateway import FakeGateway
+    fake = FakeGateway()
+    monkeypatch.setattr("claims.api.views.import_string", lambda path: lambda: fake)
+    url = f"/api/claims/{claim.id}/registration/reconcile/"
+
+    login(api, "sam")
+    assert api.get(f"/api/claims/{claim.id}/").json()["registration"]["can_reconcile"] is False
+    assert api.post(url).status_code == 403
+    api.post("/api/auth/logout/")
+    login(api, "rita")
+    assert api.get(f"/api/claims/{claim.id}/").json()["registration"]["can_reconcile"] is True
+    assert api.post(f"/api/claims/{claim.id}/registration/retry/").status_code == 400
+
+    empty = api.post(url)
+    assert empty.status_code == 200 and empty.json()["registration"]["status"] == "uncertain"
+    assert fake.register_calls == []
+    fake.records[claim.reference] = ["CH-FOUND"]
+    found = api.post(url)
+    assert found.status_code == 200 and found.json()["submission_id"] == "CH-FOUND"
+    assert found.json()["registration"]["status"] == "done"
+    assert found.json()["registration"]["can_reconcile"] is False
+    assert fake.register_calls == []
+
+
+@pytest.mark.django_db
+def test_reconciliation_lookup_failure_keeps_status_uncertain(api, submitter, reviewer, monkeypatch):
+    claim = Claim.objects.create(
+        payer="Acme", service_date=date(2026, 9, 1), billed_amount=Decimal("100.00"),
+        state=State.SUBMITTED, created_by=submitter,
+    )
+    Registration.objects.create(claim=claim, status=RegistrationStatus.UNCERTAIN)
+
+    class Unavailable:
+        def lookup(self, reference):
+            raise OSError("clearinghouse unavailable")
+
+    monkeypatch.setattr("claims.api.views.import_string", lambda path: Unavailable)
+    login(api, "rita")
+    response = api.post(f"/api/claims/{claim.id}/registration/reconcile/")
+    assert response.status_code == 503
+    assert Registration.objects.get(claim=claim).status == RegistrationStatus.UNCERTAIN
 
 
 @pytest.mark.django_db
@@ -417,7 +470,7 @@ def test_meta_lists_closed_lists(api, submitter):
     assert [d["value"] for d in body["denial_reasons"]] == [
         "not_covered", "duplicate", "insufficient_documentation", "out_of_network", "timely_filing",
     ]
-    assert [r["value"] for r in body["registration_statuses"]] == ["pending", "in_flight", "done", "failed", "halted"]
+    assert [r["value"] for r in body["registration_statuses"]] == ["pending", "in_flight", "uncertain", "done", "failed", "halted"]
     tones = {"neutral", "info", "success", "warning", "danger"}
     for group in ("states", "denial_reasons", "registration_statuses"):
         assert all(o["tone"] in tones for o in body[group]), group

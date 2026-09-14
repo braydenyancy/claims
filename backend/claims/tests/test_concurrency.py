@@ -1,6 +1,6 @@
 """Requirement 4: two reviewers act at once, exactly one succeeds.
 The thread test is the real race under a row lock; the API test is the
-stale screen, which is the common case in practice (D5)."""
+stale screen, which is the common case in practice."""
 
 import threading
 from datetime import date
@@ -80,3 +80,28 @@ def test_stale_screen_gets_409_with_what_happened(submitter, reviewer, reviewer2
     assert body["current_state"] == "APPROVED" and body["current_version"] == 1
     assert body["last_event"]["action"] == "approve" and body["last_event"]["actor"] == "rita"
     assert "detail" in body
+
+
+@pytest.mark.django_db
+def test_conflict_names_the_version_change_not_a_later_system_event(submitter, reviewer, reviewer2):
+    claim = under_review(submitter)
+    rita, rob = APIClient(), APIClient()
+    rita.force_login(reviewer)
+    rob.force_login(reviewer2)
+    result = rita.post(
+        f"/api/claims/{claim.id}/transition/",
+        {"action": "approve", "version": 0, "data": {"approved_amount": "90.00"}},
+        format="json",
+    )
+    assert result.status_code == 200
+    ClaimEvent.objects.create(
+        claim=claim, actor=None, action="registration_checked",
+        from_state=State.APPROVED, to_state=State.APPROVED, data={},
+    )
+    stale = rob.post(
+        f"/api/claims/{claim.id}/transition/",
+        {"action": "deny", "version": 0, "data": {"denial_reason": "duplicate"}},
+        format="json",
+    )
+    assert stale.status_code == 409
+    assert stale.json()["last_event"]["action"] == "approve"

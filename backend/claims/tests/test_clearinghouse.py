@@ -1,7 +1,4 @@
-"""Requirement 5: register exactly once against a slow, unreliable
-clearinghouse. The gateway tests prove the vendor's two failure modes are
-mapped to distinct outcomes and that a timeout really does leave a record
-behind, which is the fact the whole worker design rests on."""
+"""Registration outcomes, lookup reconciliation, and ambiguous-call safety."""
 
 import threading
 import time
@@ -200,13 +197,16 @@ def test_unknown_with_record_is_adopted(submitter):
 
 
 @pytest.mark.django_db
-def test_unknown_without_record_retries(submitter):
+def test_unknown_without_record_stops_before_an_unsafe_retry(submitter):
     claim = submitted(submitter)
     fake = gw.FakeGateway(outcomes=[gw.Unknown("No response")], record_on_unknown=False)
     worker.run_once(fake)
     reg = Registration.objects.get(claim=claim)
-    assert reg.status == RegistrationStatus.PENDING
-    assert events(claim) == [("registration_retry", "warning")]
+    assert reg.status == RegistrationStatus.UNCERTAIN
+    assert worker.claim_next() is None
+    assert claim.events.get(action="registration_uncertain").severity == "alert"
+    claim.refresh_from_db()
+    assert claim.has_open_alert is True
 
 
 @pytest.mark.django_db
@@ -255,6 +255,20 @@ def test_stale_lease_result_is_discarded(submitter):
     assert events(claim) == [("registration_stale_result", "warning")]
 
 
+@pytest.mark.django_db
+def test_expired_worker_still_records_a_known_duplicate(submitter):
+    claim = submitted(submitter)
+    stale = worker.claim_next()
+    Registration.objects.filter(pk=stale.pk).update(
+        status=RegistrationStatus.UNCERTAIN, lease_token="", in_flight_since=None
+    )
+    worker.record(stale, None, duplicate_ids=["CH-ONE", "CH-TWO"])
+    claim.refresh_from_db()
+    assert claim.registration.status == RegistrationStatus.HALTED
+    assert claim.has_open_alert is True
+    assert claim.events.get(action="duplicate_submission").data["submission_ids"] == ["CH-ONE", "CH-TWO"]
+
+
 @pytest.mark.django_db(transaction=True)
 def test_two_workers_claim_different_rows(submitter):
     a = submitted(submitter, "CLM-A")
@@ -279,16 +293,17 @@ def test_two_workers_claim_different_rows(submitter):
 
 
 @pytest.mark.django_db
-def test_reap_returns_expired_leases_to_pending(submitter, settings):
+def test_reap_marks_expired_leases_uncertain(submitter, settings):
     settings.CLEARINGHOUSE = {**settings.CLEARINGHOUSE, "LEASE_SECONDS": 60}
     claim = submitted(submitter)
     reg = worker.claim_next()
     Registration.objects.filter(pk=reg.pk).update(in_flight_since=timezone.now() - timedelta(seconds=61))
     assert worker.reap() == 1
     reg.refresh_from_db()
-    assert reg.status == RegistrationStatus.PENDING
+    assert reg.status == RegistrationStatus.UNCERTAIN
     assert reg.lease_token == "" and reg.in_flight_since is None
-    assert events(claim) == [("registration_recovered", "warning")]
+    assert events(claim) == [("registration_uncertain", "alert")]
+    assert worker.claim_next() is None
     assert worker.reap() == 0
 
 
@@ -297,6 +312,72 @@ def test_reap_leaves_live_leases_alone(submitter):
     submitted(submitter)
     worker.claim_next()
     assert worker.reap() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_expired_call_cannot_be_submitted_by_a_second_worker(submitter, settings):
+    settings.CLEARINGHOUSE = {**settings.CLEARINGHOUSE, "LEASE_SECONDS": 60}
+    claim = submitted(submitter)
+    started = threading.Event()
+    release = threading.Event()
+
+    class Slow(gw.FakeGateway):
+        def register(self, reference, amount):
+            started.set()
+            assert release.wait(timeout=5)
+            return super().register(reference, amount)
+
+    fake = Slow()
+
+    def first_worker():
+        try:
+            worker.run_once(fake)
+        finally:
+            connection.close()
+
+    t = threading.Thread(target=first_worker)
+    t.start()
+    try:
+        assert started.wait(timeout=5)
+        Registration.objects.filter(claim=claim).update(
+            in_flight_since=timezone.now() - timedelta(seconds=61)
+        )
+        assert worker.reap() == 1
+        assert worker.run_once(fake) is False
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    claim.refresh_from_db()
+    assert claim.registration.status == RegistrationStatus.DONE
+    assert claim.submission_id.startswith("CH-FAKE")
+    assert len(fake.register_calls) == 1
+    assert events(claim) == [
+        ("registration_uncertain", "alert"), ("registration_reconciled", "info")
+    ]
+
+
+@pytest.mark.django_db
+def test_reconcile_uncertain_is_lookup_only(submitter, reviewer):
+    claim = submitted(submitter)
+    fake = gw.FakeGateway(outcomes=[gw.Unknown("No response")], record_on_unknown=False)
+    worker.run_once(fake)
+    claim.refresh_from_db()
+    assert claim.registration.status == RegistrationStatus.UNCERTAIN
+
+    services.reconcile_registration(claim=claim, actor=reviewer, gateway=fake)
+    claim.refresh_from_db()
+    assert claim.registration.status == RegistrationStatus.UNCERTAIN
+    assert len(fake.register_calls) == 1
+    assert claim.events.order_by("-id").first().action == "registration_checked"
+
+    fake.records[claim.reference] = ["CH-LATE"]
+    services.reconcile_registration(claim=claim, actor=reviewer, gateway=fake)
+    claim.refresh_from_db()
+    assert claim.registration.status == RegistrationStatus.DONE
+    assert claim.submission_id == "CH-LATE"
+    assert len(fake.register_calls) == 1
 
 
 @pytest.mark.django_db(transaction=True)
@@ -332,7 +413,7 @@ def test_reap_skips_a_row_whose_claim_is_locked_elsewhere(submitter, settings):
 
     assert worker.reap() == 1
     reg.refresh_from_db()
-    assert reg.status == RegistrationStatus.PENDING
+    assert reg.status == RegistrationStatus.UNCERTAIN
     assert reg.lease_token == "" and reg.in_flight_since is None
 
 

@@ -1,7 +1,9 @@
+from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.db import connection
 from django.db.models import Count
 from django.middleware.csrf import get_token
+from django.utils.module_loading import import_string
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -9,7 +11,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from claims import services
+from claims import services, transitions
 from claims.models import Claim, DenialReason, RegistrationStatus, Role, State
 
 from .serializers import (
@@ -77,6 +79,7 @@ STATE_TONES = {
 REGISTRATION_TONES = {
     RegistrationStatus.PENDING: "neutral",
     RegistrationStatus.IN_FLIGHT: "info",
+    RegistrationStatus.UNCERTAIN: "warning",
     RegistrationStatus.DONE: "success",
     RegistrationStatus.FAILED: "danger",
     RegistrationStatus.HALTED: "danger",
@@ -92,7 +95,7 @@ def _options(choices, tones, lower=False):
 
 class MetaView(APIView):
     """The closed lists the UI needs for filters and labels. The UI
-    renders these; it never decides anything from them (D4)."""
+    renders these; it never decides anything from them."""
 
     def get(self, request):
         return Response(
@@ -111,8 +114,8 @@ class ClaimViewSet(
     mixins.UpdateModelMixin,
     viewsets.GenericViewSet,
 ):
-    """Claims as the current user may see them. Submitters see their own
-    (D8); reviewers see all. Writes go through services; this layer only
+    """Claims as the current user may see them. Submitters see their own;
+    reviewers see all. Writes go through services; this layer only
     maps outcomes to HTTP."""
 
     http_method_names = ["get", "post", "patch", "head", "options"]
@@ -222,6 +225,18 @@ class ClaimViewSet(
             return Response({"detail": str(exc), "errors": {}}, status=exc.status_code)
         return self._detail(claim)
 
+    @action(detail=True, methods=["post"], url_path="registration/reconcile")
+    def reconcile_registration(self, request, pk=None):
+        claim = self.get_object()
+        gateway = import_string(settings.CLEARINGHOUSE["GATEWAY"])()
+        try:
+            claim = services.reconcile_registration(claim=claim, actor=request.user, gateway=gateway)
+        except services.NotAllowed as exc:
+            return Response({"detail": str(exc), "errors": {}}, status=exc.status_code)
+        except services.ClearinghouseUnavailable as exc:
+            return Response({"detail": str(exc), "errors": {}}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return self._detail(claim)
+
     @action(detail=True, methods=["post"])
     def acknowledge(self, request, pk=None):
         claim = self.get_object()
@@ -240,7 +255,15 @@ class ClaimViewSet(
         return self._detail(claim)
 
     def _conflict(self, claim):
-        last = claim.events.select_related("actor").order_by("-created_at", "-id").first()
+        # Only transitions and draft edits increment the claim's version.
+        # A later registration or alert event must not be credited as the
+        # change that caused this stale-write conflict.
+        last = (
+            claim.events.select_related("actor")
+            .filter(action__in=[*transitions.TRANSITIONS, "edit"])
+            .order_by("-created_at", "-id")
+            .first()
+        )
         return {
             "detail": "This claim was changed by someone else. Reload to see the current state.",
             "current_state": claim.state,

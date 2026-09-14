@@ -1,49 +1,23 @@
 # Claims
 
-Claim review workflow: Django + DRF + PostgreSQL API, a registration
-worker, and a Vue 3 frontend. Built for the Ortho Med senior fullstack
-exercise. Start with `NOTES.md`; `docs/walkthroughs/` gives the reading
-order for each stage.
+Django REST Framework, PostgreSQL, and Vue 3 claim review demo. See [NOTES.md](NOTES.md) for assumptions, design choices, and limitations.
 
 ## Run
 
-    docker compose up
+```sh
+docker compose up
+```
 
-The first start builds the API image and installs frontend packages,
-which takes a minute or two; later starts are seconds. Then:
+Open http://localhost:5173. The API is at http://localhost:8000/api/ and its health endpoint is `/api/health/`. First startup builds the images, migrates the database, and seeds sample claims. Sign in as `sam` (submitter), `rita`, or `rob` (reviewers); the demo password is `password`. Historical `CH-SEED` IDs are fixtures; new submissions use the worker.
 
-- UI on http://localhost:5173 (the Vite dev server proxies `/api` to the API)
-- API on http://localhost:8000/api/ (health: `GET /api/health/`)
+The worker registers newly submitted claims in the background. Its activity is visible with `docker compose logs -f worker`.
 
-Seeded logins, password `password`: `sam` (submitter), `rita` and `rob`
-(reviewers). The seed includes claims in every state, one whose
-registration the worker completes on boot, and one whose registration
-failed with an open alert.
+## Test
 
-The worker registers submitted claims with the clearinghouse; its log
-shows every attempt (`docker compose logs -f worker`). Knobs:
-`CLEARINGHOUSE_MAX_ATTEMPTS`, `CLEARINGHOUSE_LEASE_SECONDS`,
-`CLEARINGHOUSE_POLL_SECONDS`, `CLEARINGHOUSE_CALL_TIMEOUT_SECONDS`.
+With the stack running:
 
-## Tests
-
-    docker compose up -d postgres
-    cd backend && uv sync && uv run pytest          # 200 tests
-    cd frontend && npm install && npm run typecheck && npm test   # 20 tests
-
-What each test file proves is described in `NOTES.md` and at the top of
-the file itself.
-
-## Develop
-
-    docker compose up -d postgres api
-    cd frontend && npm install && npm run dev
-
-## Layout
-
-- `backend/` Django project and the `claims` app
-- `frontend/` Vue 3 app
-- `vendor/` third-party code used as-is (the clearinghouse client);
-  `vendor/clearinghouse.sqlite3` is its own store, created at runtime and git-ignored
-- `docs/` compliance program, decisions, workflows, specs, plans, receipts, walkthroughs
-  (`docs/policies`, `docs/procedures` and `docs/security` are placeholders)
+```sh
+docker compose exec api pytest
+docker compose exec frontend npm run typecheck
+docker compose exec frontend npm test
+```
