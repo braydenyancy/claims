@@ -2,11 +2,11 @@
 
 ## Assumptions
 
-Submitters see only their claims; reviewers see all. Drafts may omit payer or service date and may have a zero amount; submission checks all three. Service dates use the UTC date. Denial reasons are a fixed demo list. The vendor bills duplicate submissions and does not enforce idempotency: claim reference is a unique lookup key, not a retry token.
+Submitters see only their claims; reviewers see all. Drafts may omit payer or service date and may have a zero amount; submission checks all three. Service dates are calendar dates with no time zone. Denial reasons are a fixed demo list. The vendor bills duplicate submissions and does not enforce idempotency: claim reference is a unique lookup key, not a retry token.
 
 ## Design
 
-One transition table defines legal states, roles, inputs, and rules. The API uses it to enforce changes and describe available actions; Vue renders those actions without copying the rules. I chose this small explicit table over a state-machine dependency.
+One transition table defines legal states, roles, inputs, and rules. The API uses it to enforce changes and describe available actions; Vue renders those actions without copying the rules; badge colours and the dashboard counts come from the API too, so the frontend contains no state or role names. I chose this small explicit table over a state-machine dependency.
 
 A transition locks the claim row, compares the client's version, then writes the claim and audit event in one transaction. The loser of a reviewer race gets HTTP 409 and the current state. The event table also has an update/delete trigger. A lock alone would serialize writes but give poor stale-screen feedback; versioning alone would not serialize the check and write.
 
